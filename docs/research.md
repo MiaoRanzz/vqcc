@@ -81,3 +81,19 @@ proposed change, expected official-cost effect, experiment ID and parent,
 measured outcome, counterexample/failure reason, and next action. Record a
 negative result's tested scope so it remains useful without forbidding unrelated
 variants. Revisit stale negative results when the algorithm or contract changes.
+
+## First bounded optimization update — 2026-10-29
+
+The completed run `20261029T164657-optimize-deee74` promoted two officially verified
+improvements: InvSqrt `1,941,280.5598621224` (256 qubits, 7,327 Toffolis) and
+DFTHC-SOS `3,247,752,448.668952` (742 whole-block qubits, 88,781 Toffolis).
+DQI remains `2,346,266,562,950.239`. Combined local improvement over the submitted
+baseline is `1.0339417327`; platform score remains unknown. No upload occurred.
+
+See [experiment and reproduction details](experiments/2026-10-29-bounded.md).
+All precision failures and retained margin/resource tradeoffs are in the experiment
+store. Topic cursors and the ranked next-run queue now live under
+`artifacts/research/`; review these before repeating initial leads. The next
+priority is a measured lifetime/recomputation analysis of the pinned, licensed
+DQI family; chemistry lookup families and InvSqrt coefficient/precision co-tuning
+remain active routes. Imported public frontier claims are still unreplicated.
