@@ -151,7 +151,7 @@ def generate_dfthcsos(stage: Path, params: dict, args) -> dict:
         build_angle_k_family, write_kmx_family,
     )
 
-    unknown = set(params) - {"brot", "source_brot", "batch_size"}
+    unknown = set(params) - {"brot", "source_brot", "batch_size", "prefix_bits"}
     if unknown:
         raise ValueError(f"Unknown dfthcsos parameters: {sorted(unknown)}")
     source = Path(args.source_npz).resolve()
@@ -166,10 +166,16 @@ def generate_dfthcsos(stage: Path, params: dict, args) -> dict:
     words = requantize_words(arrays["angle_words"], source_brot, brot)
     arrays["angle_words"] = words
     num_bits = (words.shape[0] - 1).bit_length()
-    estimated_qubits = 2 * num_bits - 1 + brot * batch_size
+    prefix_bits = integer(params, "prefix_bits", 0, 0, num_bits)
+    if prefix_bits:
+        from dfthcsos_prefix import build_prefix_family, workspace_bits
+        estimated_qubits = num_bits + brot * batch_size + workspace_bits(num_bits, prefix_bits)
+    else:
+        estimated_qubits = 2 * num_bits - 1 + brot * batch_size
     if estimated_qubits > 128:
         raise ValueError(f"QROM construction needs {estimated_qubits} qubits, exceeding ANGLE limit 128")
-    circuits = build_angle_k_family(words, brot, batch_size)
+    circuits = (build_prefix_family(words, brot, batch_size, prefix_bits) if prefix_bits
+                else build_angle_k_family(words, brot, batch_size))
     if any(c.num_qubits > 128 for c in circuits):
         raise ValueError("An ANGLE circuit exceeds the 128-qubit limit")
     write_kmx_family(circuits, stage, format="kmb")
@@ -178,7 +184,10 @@ def generate_dfthcsos(stage: Path, params: dict, args) -> dict:
     else:
         np.savez(stage / "submission.npz", **arrays)
     return {
-        "parameters": {"brot": brot, "source_brot": source_brot, "batch_size": batch_size},
+        "parameters": {"brot": brot, "source_brot": source_brot, "batch_size": batch_size,
+                       "prefix_bits": prefix_bits},
+        "builder_family": "prefix_recomputed" if prefix_bits else "reference",
+        "builder_sha256": sha256(Path(__file__).with_name("dfthcsos_prefix.py")) if prefix_bits else None,
         "build_status": "built", "source_npz": str(source), "source_npz_sha256": sha256(source),
         "factorization_arrays_preserved": True, "npz_byte_identical": brot == source_brot,
         "angle_precision_changed": brot != source_brot,
