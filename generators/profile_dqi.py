@@ -29,8 +29,14 @@ def profile(builder):
         # Claims follow allocation; record at equal counts to capture ownership.
         if len(live) >= peaks.get(phase, {}).get("live", -1):
             sizes = {name: len(ids & live) for name, ids in owned.items() if ids & live}
-            peaks[phase] = {"live": len(live), "owners": sizes,
-                            "unclaimed": len(live - set().union(*owned.values()))}
+            unclaimed = len(live - set().union(*owned.values()))
+            previous = peaks.get(phase)
+            # Allocation precedes claim and release precedes recycle. At an
+            # equal peak prefer the fully claimed state, not transient bookkeeping.
+            if (previous is None or len(live) > previous["live"]
+                    or unclaimed < previous["unclaimed"]):
+                peaks[phase] = {"live": len(live), "owners": sizes,
+                                "unclaimed": unclaimed}
     return {"num_qubits": builder.next_qubit, "peak_live": builder.peak_qubits,
             "peak_phase": builder.peak_phase, "phase_peaks": peaks,
             "upstream_phase_summary": builder.phase_summary(),

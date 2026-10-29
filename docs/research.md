@@ -97,3 +97,18 @@ store. Topic cursors and the ranked next-run queue now live under
 priority is a measured lifetime/recomputation analysis of the pinned, licensed
 DQI family; chemistry lookup families and InvSqrt coefficient/precision co-tuning
 remain active routes. Imported public frontier claims are still unreplicated.
+
+## Second bounded update — 2026-10-29
+
+Run `20261029T181000-optimize-1095d3` promoted the direct runtime-mask DQI
+product phase: cost `1847158218915.0073`, 1842 qubits, 444030 Toffolis.
+Official full verification passed (102400 shots; 0 value errors, 9 phase errors);
+all source and artifact evidence is preserved. Combined local improvement over
+the submitted baseline is `1.1197484843`. No upload occurred; platform score
+remains unknown. See [experiment and reproduction details](experiments/2026-10-29-dqi-phase.md).
+
+The measured lifetime profile did not reduce qubits: sweep peaks at 1842 and
+Euclid at 1837, with 444 long-lived BM B-bank bits. Next-run queue now rotates
+to chemistry Boolean lookup decomposition, then InvSqrt coefficient co-tuning;
+a larger DQI state-recomputation route remains active. Original and corrected
+profiling diagnostics and typed-control harness failures are retained.
