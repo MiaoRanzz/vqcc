@@ -7,6 +7,9 @@
 [AGENTS.md](AGENTS.md)，部署参数见 [automation/config.json](automation/config.json)。
 可以在本项目直接要求 Codex 使用 `$vqcc-optimize` 做一次研究、优化或结果审查。
 
+私有 Web 控制台的页面、参数、队列、额度、接口与验收要求见
+[Web 控制台开发文档](docs/web-console-development.md)。该文档是实施规格，Web 服务尚未部署。
+
 ## 已授权的运行方式
 
 | 项目 | 配置 |
