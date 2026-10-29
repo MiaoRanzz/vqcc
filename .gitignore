@@ -4,6 +4,7 @@ __pycache__/
 *.kmb
 *.kmx
 *.zip
+*.log
 *.npz
 *.fcidump
 *.pdf
