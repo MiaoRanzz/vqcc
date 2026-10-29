@@ -198,17 +198,22 @@ def generate_dfthcsos(stage: Path, params: dict, args) -> dict:
 
 
 def generate_dqi(stage: Path, params: dict, args) -> dict:
-    unknown = set(params) - {"stack_cap"}
+    unknown = set(params) - {"stack_cap", "sweep_mode"}
     if unknown:
         raise ValueError(f"Unknown dqi parameters: {sorted(unknown)}")
     stack_cap = integer(params, "stack_cap", 1, 1, 35)
+    sweep_mode = params.get("sweep_mode", "product")
+    if sweep_mode not in ("product", "phase"):
+        raise ValueError("sweep_mode must be product or phase")
     command = [sys.executable, str(ROOT / "generators/dqi_adapter.py"),
                "--output-dir", str(stage), "--upstream", str(Path(args.upstream).resolve()),
-               "--stack-cap", str(stack_cap), "--report", str(stage / "build_report.json")]
+               "--stack-cap", str(stack_cap), "--sweep-mode", sweep_mode,
+               "--report", str(stage / "build_report.json")]
     subprocess.run(command, cwd=ROOT, check=True)
     report = json.loads((stage / "build_report.json").read_text())
     (stage / "build_report.json").unlink()
-    return {"parameters": {"stack_cap": stack_cap}, "build_status": "built", "adapter_report": report}
+    return {"parameters": {"stack_cap": stack_cap, "sweep_mode": sweep_mode},
+            "build_status": "built", "adapter_report": report}
 
 
 def parser() -> argparse.ArgumentParser:

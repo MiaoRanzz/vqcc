@@ -64,7 +64,11 @@ def field_isomorphism(p):
     return forward, backward, p.LOG[primitive_image], beta
 
 
-def install_adapter(p, forward, backward, step):
+def install_adapter(p, forward, backward, step, sweep_mode="product"):
+    if sweep_mode not in ("product", "phase"):
+        raise ValueError(f"Unknown sweep mode: {sweep_mode}")
+    from dqi_phase import emit_product_phase, product_phase_terms
+    phase_terms = product_phase_terms(p, backward) if sweep_mode == "phase" else ()
     original_declare = p.declare_registers
 
     def declare(b, schema):
@@ -93,14 +97,19 @@ def install_adapter(p, forward, backward, step):
                         for src, dst in zip(word, target):
                             b.cx(src, dst)
                 linear_in_place(b, bez, p.SQUARE_ROWS)
-                product = p.prod_rt(err, om, bez)
-                E.emit_mac(product)
-                linear_in_place(b, err, backward)
-                with p.eq_test(E, loc, 0) as root:
-                    for bit in range(p.B):
-                        b.cz(root, err[bit], when=j * p.B + bit)
-                linear_in_place(b, err, forward)
-                E.emit_free(product)
+                if sweep_mode == "phase":
+                    with p.eq_test(E, loc, 0) as root:
+                        emit_product_phase(p, E, root, om, bez, err, phase_terms,
+                                           [j * p.B + k for k in range(p.B)])
+                else:
+                    product = p.prod_rt(err, om, bez)
+                    E.emit_mac(product)
+                    linear_in_place(b, err, backward)
+                    with p.eq_test(E, loc, 0) as root:
+                        for bit in range(p.B):
+                            b.cz(root, err[bit], when=j * p.B + bit)
+                    linear_in_place(b, err, forward)
+                    E.emit_free(product)
                 linear_in_place(b, bez, p.SQRT_ROWS)
                 for words, target in [(bezout, bez), (locator, loc), (omega, om)]:
                     for word in reversed(words):
@@ -169,6 +178,7 @@ def main():
     parser.add_argument("--upstream", type=Path, default=ROOT / "submission/2026-10-29/source/upstream")
     parser.add_argument("--stack-cap", type=int, default=1,
                         help="Tagged reversal-stack slots; other approximation windows stay unchanged")
+    parser.add_argument("--sweep-mode", choices=("product", "phase"), default="product")
     parser.add_argument("--report", type=Path,
                         help="Metadata path; default OUTPUT_PARENT/build_report.json")
     args = parser.parse_args()
@@ -187,7 +197,7 @@ def main():
     p.CAPS = [min(c, args.stack_cap) for c in p.CAPS_FULL]
     forward, backward, step, beta = field_isomorphism(p)
     print(f"Field isomorphism verified: beta={beta}, exponent={step}", flush=True)
-    install_adapter(p, forward, backward, step)
+    install_adapter(p, forward, backward, step, args.sweep_mode)
     b, _ = p.build()
     for r in range(p.N):
         linear_in_place(b, list(range(r * p.B, (r + 1) * p.B)), backward)
@@ -206,6 +216,10 @@ def main():
         "upstream_circuit_sha256": hashlib.sha256((upstream / "tasks/dqi-reed-solomon/circuits/discovered/circuit.py").read_bytes()).hexdigest(),
         "adapter_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "stack_cap": args.stack_cap,
+        "sweep_mode": args.sweep_mode,
+        "phase_source_sha256": hashlib.sha256(Path(__file__).with_name("dqi_phase.py").read_bytes()).hexdigest(),
+        "phase_profile": b.phase_summary(),
+        "profile_cost_warning": "Upstream phase counts bill classical CZ differently from the official kickmix verifier; not an official score.",
         "official_validation": "not_run",
         "competition_polynomial": km.GF2Field(p.B).modulus,
         "paper_polynomial": p.POLY,
