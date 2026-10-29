@@ -1,0 +1,12 @@
+{
+  "conda_environment": "vqcc",
+  "python_executable": "/root/miniconda3/envs/vqcc/bin/python",
+  "sys_prefix": "/root/miniconda3/envs/vqcc",
+  "python_version": "3.13.18 | packaged by Anaconda, Inc. | (main, Oct 27 2026, 00:57:03) [GCC 14.3.0]",
+  "packages": {
+    "numpy": "2.5.4",
+    "scipy": "1.18.1",
+    "pypdf": "6.21.4"
+  },
+  "kickmix_sha256": "c66b3216c4029e0cdfd09054306aa0feadf53ab2f50c1164e37f752874e5005e"
+}

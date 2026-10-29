@@ -1,0 +1,21 @@
+{
+  "upstream_commit": "64b5a13aa249f1360846657392e6c66817b26d0f",
+  "competition_polynomial": 4179,
+  "paper_polynomial": 4331,
+  "isomorphism_beta": 82,
+  "primitive_exponent": 3196,
+  "field_basis_exhaustively_checked": true,
+  "qubits": 1842,
+  "instructions": 114741138,
+  "operation_statistics": {
+    "NEG": 1,
+    "X": 216901,
+    "Z": 22577,
+    "R": 60563,
+    "HMR": 567541,
+    "CX": 109151925,
+    "CZ": 2173306,
+    "SWAP": 1981444,
+    "CCX": 566880
+  }
+}

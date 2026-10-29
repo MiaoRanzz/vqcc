@@ -1,0 +1,25 @@
+{
+  "source": "sample_submission/dqi.kmb",
+  "num_qubits": 1893,
+  "num_bits": 49154,
+  "num_ops": 86051014,
+  "toffoli_count": 5725461,
+  "operation_statistics": {
+    "NEG": 1302,
+    "BIT_INVERT": 6479824,
+    "BIT_STORE0": 689460,
+    "BIT_STORE1": 49140,
+    "X": 828388,
+    "Z": 33744,
+    "R": 1227624,
+    "HMR": 1227624,
+    "CX": 53871594,
+    "CZ": 9440886,
+    "SWAP": 3134247,
+    "CSWAP": 1172616,
+    "CCX": 4552845,
+    "INFO_TAG": 3257126,
+    "POP_CONDITION": 42297,
+    "PUSH_CONDITION": 42297
+  }
+}
