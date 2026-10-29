@@ -106,7 +106,7 @@ def generate_invsqrt(stage: Path, params: dict, args) -> dict:
     from invsqrt.verify_submission_invsqrt import N_P
 
     allowed = {"delta_bits", "coef_bits", "square_bits", "product_bits", "result_bits"}
-    unknown = set(params) - allowed
+    unknown = set(params) - allowed - {"coefficient_table"}
     if unknown:
         raise ValueError(f"Unknown invsqrt parameters: {sorted(unknown)}")
     defaults = asdict(Precision())
@@ -117,7 +117,12 @@ def generate_invsqrt(stage: Path, params: dict, args) -> dict:
     values = {k: integer(params, k, v, *bounds[k]) for k, v in defaults.items()}
     if values["delta_bits"] >= values["coef_bits"]:
         raise ValueError("delta_bits must be less than coef_bits for this Horner generator")
-    prec = Precision(**values)
+    if "coefficient_table" in params:
+        from invsqrt_coefficients import TablePrecision
+        prec = TablePrecision(coefficient_table=params["coefficient_table"], **values)
+        values["coefficient_table"] = prec.coefficient_table()
+    else:
+        prec = Precision(**values)
     screen = numeric_screen(prec)
     if not screen["passes_model_tolerance"]:
         # Preserve the measured negative result, but do not generate a circuit
