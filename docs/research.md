@@ -112,3 +112,18 @@ Euclid at 1837, with 444 long-lived BM B-bank bits. Next-run queue now rotates
 to chemistry Boolean lookup decomposition, then InvSqrt coefficient co-tuning;
 a larger DQI state-recomputation route remains active. Original and corrected
 profiling diagnostics and typed-control harness failures are retained.
+
+## Third bounded update — 2026-10-30 (Asia/Shanghai)
+
+Run `20261030T001000-optimize-565f4a` promoted exact-word ANF lookup candidate
+`20261030T002957-dfthcsos-8907aa`: DFTHC-SOS cost `3143055863.722955`,
+85,919 whole-block Toffolis and 742 qubits. Official full verification and the
+precommitted arbitrary-target cleanup check passed. Combined local improvement
+over the submitted baseline is `1.1320460391`; no upload occurred.
+See [evidence and reproduction](experiments/2026-10-30-dfthcsos-anf.md).
+
+Nine resource combinations retain cap failures and lower-ANGLE-width tradeoffs;
+the initial screening API counting error is explicitly invalidated and archived.
+Kaggle was inaccessible this run, so the successful message cursor did not advance.
+The queue now prioritizes InvSqrt coefficient co-tuning, followed by DQI state
+recomputation and chemistry quantization screening.
