@@ -7,9 +7,19 @@ that shared budget. The existing daily-submission authorization is for the
 separate submit mode: this run must not upload or submit.
 
 Start with pipeline status, the three task incumbents, recent failures, and the
-saved hypothesis queue. Review recent Kaggle comments and task-relevant primary
-papers when they can inform the next experiment; preserve update cursors and
-source/license evidence. Then implement and measure at least one concrete,
+saved hypothesis queue. Check the skill's daily and weekly checkpoint records:
+once per Asia/Shanghai day inspect the competition Code page in score-descending
+order using references/public-code.md; at the first available run each week,
+review the previous completed ISO week using references/weekly-review.md.
+Persist partial progress and retry later within existing budgets. Reproduce
+promising public methods and promote only fully verified per-task gains; use
+promoted candidates as the next working parents. Implement justified weekly
+workflow/skill changes with targeted validation and version history. Never treat
+notebook popularity, title claims or unlinked team scores as local proof.
+
+Review recent Kaggle comments and task-relevant primary papers when they can
+inform the next experiment; preserve update cursors and source/license evidence.
+Then implement and measure at least one concrete,
 budget-feasible hypothesis unless an evidenced blocker prevents experiments.
 Literature summaries alone do not complete an otherwise feasible optimization
 run. Prefer work with the largest expected relative-score gain per unit effort,

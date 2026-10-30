@@ -1,6 +1,6 @@
 ---
 name: vqcc-optimize
-description: Research, optimize, verify, version, and submit this repository's DQI, InvSqrt, and DFTHC-SOS entries for the Google Verifiable Quantum Circuit Compilation competition. Use for its daily competition workflow, experiment review, submission reconciliation, and reproducibility packages.
+description: Research, optimize, verify, version, and submit this repository's DQI, InvSqrt, and DFTHC-SOS entries for the Google Verifiable Quantum Circuit Compilation competition. Use for its daily competition workflow, public notebook comparisons, weekly workflow improvement, experiment review, submission reconciliation, and reproducibility packages.
 ---
 
 # VQCC optimization workflow
@@ -19,10 +19,35 @@ reproducible code changes and measured experiments, not only literature summarie
 2. Read the current task incumbents, unresolved submission attempts, recent
    experiments, and last research cursor from the artifact store. Reuse the
    immutable 2026-10-29 baseline; never regenerate into that historical directory.
+   Start new research from the current verified per-task best, including promoted
+   public reproductions; the historical baseline is not a ceiling or a reset target.
 3. Read [task contracts](references/tasks.md) for the task being changed. Consult
    current official pages when rules, deadlines, metric code, or dependencies
    may have changed. Preserve old verifier versions and invalidate affected
    comparisons if the official contract changes; do not silently update it.
+
+## Daily and weekly checkpoints
+
+The user authorized daily public-code comparison and weekly improvement of this
+workflow and skill. Run both inside existing optimization jobs, sharing their
+resource, time and model-task budgets; do not start another scheduler.
+
+- On the first available optimization run each **Asia/Shanghai date**, perform
+  the [high-scoring public-code review](references/public-code.md). Continue an
+  unfinished scan in a later run; unchanged source and valid evidence are reused.
+  Promote a reproduced, verified per-task improvement as the next working
+  baseline, then optimize from it. Listing order or a notebook title alone is
+  not evidence of better circuits.
+- Once per week, at the first available run from **Monday 00:00 Asia/Shanghai**,
+  review the previous completed ISO week using the
+  [weekly retrospective](references/weekly-review.md). Summarize measured
+  results and implement justified local workflow/skill improvements, with
+  relevant checks, a Git checkpoint and next-week success criteria. Resume
+  incomplete work instead of marking it complete or applying a change twice.
+- Read each checkpoint's durable status before repeating it. Pauses, unavailable
+  tools or insufficient budget produce an explicit partial/deferred result;
+  they do not count as completed scans or completed retrospectives. These local
+  calendar dates do not change the UTC submission quota or pending-submit priority.
 
 ## Research and optimize
 
@@ -112,6 +137,9 @@ materials early enough to allow full verification before that deadline.
 - Record experiments including failures, current best costs, relative combined
   improvement, resource usage, and the next highest-value hypothesis. Report
   platform score/rank only when actually returned by an authoritative source.
+- Include the daily public-code scan/comparison and any due weekly retrospective
+  in the run report: coverage, evidence, adopted baseline or skip reason,
+  workflow changes/checks, record paths and unfinished follow-up.
 - Commit reproducible source and relevant documentation with an explanatory
   message. Keep generated artifacts in configured storage, linked by hashes;
   do not include credentials or temporary signed URLs in source or reports.
