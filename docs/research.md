@@ -151,3 +151,24 @@ rotates next to source-reproducible InvSqrt arithmetic and DQI architecture,
 followed by newer chemistry factors/loaders; public claims still require local
 verification. DQI permission discussion has new author feedback, but exact
 source-chain and prize-eligibility questions must be kept distinct.
+
+## User-selected public bundle update — 2026-10-30 (Asia/Shanghai)
+
+Run `20261030T140200-optimize-e25b2c` reproduced busyaprime notebook v11 / dataset
+v6 and promoted all three exact components after unchanged official full verification:
+DQI `410274633000.4907`, InvSqrt `102349.2360480486`, DFTHC-SOS
+`339143297.036648`. DQI also passed one independent full-size replication.
+The local combined gain is `2.5177989396` over this run's starting incumbents;
+no upload or submission occurred. Attribution belongs to the preserved public
+source chain; this is not a newly observed leaderboard score.
+
+The new exact GF(2) elimination experiment found no redundant products among
+2,970 terms across the fifteen chemistry plans, but rebuilt all fifteen parent
+circuits byte-for-byte from credited source plans. No redundant official run
+was launched. The source-delivery gap for exact imported DQI/InvSqrt generators
+remains explicit. See [measurements, scope and source evidence](experiments/2026-10-30-busyaprime-reproduction.md).
+
+Today's scoped score-sorted scan covered twenty listed notebooks and four
+primary texts; newer 62-qubit InvSqrt and chemistry versions remain queued.
+The previous completed ISO week predates project records and is `no_data`;
+first data-bearing weekly review is due 2026-11-02 for W44.
