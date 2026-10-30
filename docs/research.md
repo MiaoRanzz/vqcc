@@ -127,3 +127,27 @@ the initial screening API counting error is explicitly invalidated and archived.
 Kaggle was inaccessible this run, so the successful message cursor did not advance.
 The queue now prioritizes InvSqrt coefficient co-tuning, followed by DQI state
 recomputation and chemistry quantization screening.
+
+## Fifth bounded update — 2026-10-30 (Asia/Shanghai)
+
+Run `20261030T101500-optimize-96616a` reproduced original-author Apache-2.0
+R1/B496/C384 factorization data using the repository's independently implemented
+ANF compiler, then promoted `20261030T102135-dfthcsos-9cae8f`: chemistry cost
+`821433551.3141971`, 20,286 whole-block Toffolis, 833 qubits. Official full
+36,608-shot verification and the preregistered arbitrary-target XOR check passed.
+Combined local improvement over the submitted historical baseline is
+`1.7980662417`; no upload or submission occurred.
+
+Two 11-bit quantization variants on the old R65 factorization failed residual
+gates. Four orthogonal coefficient-gauge sweeps on the public R1 factorization
+produced negligible predicted gain (3.481e-9 relative), retained without official
+verification. Eleven static resource/ANGLE-width tradeoffs remain available.
+See [evidence, ancestry and reproduction](experiments/2026-10-30-public-thc.md).
+
+Public read-only Kaggle API access restored research coverage: 44 listed topics,
+eight topics and replies (40 messages) fetched, including new activity in older
+threads. Source/licence evidence and successful cursors are preserved. The queue
+rotates next to source-reproducible InvSqrt arithmetic and DQI architecture,
+followed by newer chemistry factors/loaders; public claims still require local
+verification. DQI permission discussion has new author feedback, but exact
+source-chain and prize-eligibility questions must be kept distinct.
