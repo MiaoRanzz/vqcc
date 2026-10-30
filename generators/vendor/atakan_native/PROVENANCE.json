@@ -1,0 +1,15 @@
+{
+  "author": "Atakan Aldemir; upstream contributors retained in CREDITS.md",
+  "source_url": "https://www.kaggle.com/datasets/atakanaldemir/qcc-native-chemistry-and-888q-source-bank",
+  "notebook_url": "https://www.kaggle.com/code/atakanaldemir/qcc-888q-repair-and-native-chemistry-co-design",
+  "notebook_version_observed": 3,
+  "dataset_version_number": null,
+  "revision_pin": "Downloaded archive and original MANIFEST.json hashes, not mutable dataset title",
+  "retrieved_date": "2026-10-30",
+  "archive_sha256": "c2a15dd00ceaa7f838c18cf9ad428dbd11b2b3beccc5049e9393e86e4a439891",
+  "source_manifest_sha256": "1dca791a732d8e079f2d510701f6031c8255be99ac6651489d199a6775fe54b1",
+  "emitter_sha256": "fd11c694aaa0fb0835a3ebc192f1c09865cfde2d1b72252a70829ad45337ad9d",
+  "modifications": "None; retained original bytes including CRLF. Only reviewed definitions emit_native are imported; CLI not executed. New independent plan reducer lives outside vendor.",
+  "license_scope": "Author emitter under Apache-2.0, all other assets retain recorded upstream terms; full Apache text, source notice and credits retained",
+  "upstream_archive": "/mnt/data2/vqcc/runs/20261030T140200-optimize-e25b2c/research/atakan-source.zip"
+}
