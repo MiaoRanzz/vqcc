@@ -1,0 +1,64 @@
+{
+  "exported_files": {
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "NOTICE.md": "f617ec7104d6bdd2e00f7d954d7fb6724e8721dd435352600efe0e4378c22740",
+    "build.py": "8e6ea2c657234e834a058b6ea7399558f5597982438ab08ebc4b13af3c9ebb71",
+    "calib.py": "f22ac76b2fc490dfecf5b1d446bf57b2f0fcb98a9d5b0b921a8b03bb54c15e7d",
+    "check.py": "5308ce8b4ee49ca748dde59f535e077f1d920eaed8b2f9a555a8d7e3f05b88ca",
+    "exact.py": "86e096916e574fb74be8cae5b886d6167167f80ef790b68b7c34107f09afaf67",
+    "fit.py": "ff2f7d18708611761f33f4afe40a18e84dccaec02ae3bc9ea0b01257c9aa7217",
+    "hsplit.py": "357bc93f56e5d48f7220ed3eb6fbc0816925c714cedb055fb5a1edd1c362574d",
+    "model.py": "54326857503073e20ac71de566d75eb3ca082bf72ea4ddebd2e5e0391a0726a1",
+    "run.py": "81ca5f8356dab37c8bbdd5a412595e9e810c56521c7eb15f92fd4d47efd1f4b2"
+  },
+  "original_modules": [
+    {
+      "file": "generators/vendor/marsyas_invsqrt/run.py",
+      "source_body_sha256": "34260ed900fbedc209664c54cb7b0421506548ccd9a50bf3e89085f7900da9cf",
+      "exported_sha256": "81ca5f8356dab37c8bbdd5a412595e9e810c56521c7eb15f92fd4d47efd1f4b2",
+      "export_transform": "remove %%writefile directive; append one terminal LF; all other bytes identical"
+    },
+    {
+      "file": "generators/vendor/marsyas_invsqrt/model.py",
+      "source_body_sha256": "65bf89538e736f5d02add43c7f74bb57c02b4fa3f699df02b9e83cd984a58162",
+      "exported_sha256": "54326857503073e20ac71de566d75eb3ca082bf72ea4ddebd2e5e0391a0726a1",
+      "export_transform": "remove %%writefile directive; append one terminal LF; all other bytes identical"
+    },
+    {
+      "file": "generators/vendor/marsyas_invsqrt/fit.py",
+      "source_body_sha256": "0ab68492466fde0156cb54379a4e18d6673b183d83e4674101f55b58a43111d0",
+      "exported_sha256": "ff2f7d18708611761f33f4afe40a18e84dccaec02ae3bc9ea0b01257c9aa7217",
+      "export_transform": "remove %%writefile directive; append one terminal LF; all other bytes identical"
+    },
+    {
+      "file": "generators/vendor/marsyas_invsqrt/build.py",
+      "source_body_sha256": "eef91d07c4c99d92545272d5d6e4daeb78a925e3d7307d27b093699d34f49e3e",
+      "exported_sha256": "8e6ea2c657234e834a058b6ea7399558f5597982438ab08ebc4b13af3c9ebb71",
+      "export_transform": "remove %%writefile directive; append one terminal LF; all other bytes identical"
+    },
+    {
+      "file": "generators/vendor/marsyas_invsqrt/calib.py",
+      "source_body_sha256": "9777a679e6ace7e8df67ed61df2a5d61e91a2f7d542161916d48ba1f33e9f209",
+      "exported_sha256": "f22ac76b2fc490dfecf5b1d446bf57b2f0fcb98a9d5b0b921a8b03bb54c15e7d",
+      "export_transform": "remove %%writefile directive; append one terminal LF; all other bytes identical"
+    },
+    {
+      "file": "generators/vendor/marsyas_invsqrt/check.py",
+      "source_body_sha256": "2644d8d137efec140b3a5e95d47810fb9cec604752e50dff9f341f67880c48c1",
+      "exported_sha256": "5308ce8b4ee49ca748dde59f535e077f1d920eaed8b2f9a555a8d7e3f05b88ca",
+      "export_transform": "remove %%writefile directive; append one terminal LF; all other bytes identical"
+    },
+    {
+      "file": "generators/vendor/marsyas_invsqrt/hsplit.py",
+      "source_body_sha256": "fc1fa942a08425bc580980d980b3cd34bfcda47f6db6b7ab137595ae2d4513ec",
+      "exported_sha256": "357bc93f56e5d48f7220ed3eb6fbc0816925c714cedb055fb5a1edd1c362574d",
+      "export_transform": "remove %%writefile directive; append one terminal LF; all other bytes identical"
+    },
+    {
+      "file": "generators/vendor/marsyas_invsqrt/exact.py",
+      "source_body_sha256": "3bb4a976bdaea773ed6d8c9c574b2a9dca28d0ceaee19261348874b4faf4b5c2",
+      "exported_sha256": "86e096916e574fb74be8cae5b886d6167167f80ef790b68b7c34107f09afaf67",
+      "export_transform": "remove %%writefile directive; append one terminal LF; all other bytes identical"
+    }
+  ]
+}

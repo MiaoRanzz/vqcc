@@ -1,14 +1,14 @@
 # Attribution and provenance
 
-Unmodified module bodies extracted from Houssem Alayet (marsyas),
+Module bodies extracted from Houssem Alayet (marsyas),
 `VQCC invsqrt 13.94x - full source`, Kaggle notebook version 2,
 retrieved 2026-10-30. The notebook explicitly releases this code under
-Apache License 2.0. Only the notebook `%%writefile` directives were removed.
+Apache License 2.0. The notebook `%%writefile` directives were removed and
+one terminal LF was appended by the export. All other module bytes are unchanged.
+Both original-body and exported hashes are retained in manifest.json.
 
-Source: https://www.kaggle.com/code/marsyas/vqcc-invsqrt-13-94x-full-source?scriptVersionId=140607518
-The retrieved API metadata calls 140607518 the notebook id, not a script-version id;
-use the notebook URL without this query together with version number 2 and
-the per-file hashes in the adjacent manifest for exact provenance.
+Source: https://www.kaggle.com/code/marsyas/vqcc-invsqrt-13-94x-full-source
+Kaggle notebook id 140607518, version 2; exact module hashes are in manifest.json.
 
 Upstream states that the following ideas were independently reimplemented:
 Sumit Chongder and kozykappa (signed-digit rows), anazemcev (high/low split,
