@@ -77,7 +77,8 @@ def main():
     code = output.parent / 'code'
     code.mkdir(exist_ok=True)
     for f in (args.recipe, args.provenance):
-        shutil.copy2(f, code / f.name)
+        if f.resolve() != (code / f.name).resolve():
+            shutil.copy2(f, code / f.name)
     report = dict(kind='pinned_public_parts_assembly', official_validation=False,
                   created_at=datetime.now(timezone.utc).isoformat(),
                   python_executable=sys.executable, python_prefix=sys.prefix,
