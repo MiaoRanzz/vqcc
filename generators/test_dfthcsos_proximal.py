@@ -13,9 +13,9 @@ class TangentProxTests(unittest.TestCase):
 
     def test_convex_kkt_including_zeroed_and_released_entries(self):
         rng=np.random.default_rng(20261031);zeros=released=0
-        for _ in range(30):
+        for trial in range(30):
             x=rng.normal(size=40)*.1;x[:12]=0
-            g=rng.normal(size=40);weights=rng.uniform(.1,1.2,size=40);j=rng.normal(size=(3,40));step=.2
+            g=rng.normal(size=40);weights=rng.uniform(.1,1.2,size=40);j=rng.normal(size=(2+trial%2,40));step=.2
             y,info=tangent_prox(x,g,weights,j,step)
             self.assertIsNotNone(y,info)
             np.testing.assert_allclose(j@(y-x),0,atol=1e-9)

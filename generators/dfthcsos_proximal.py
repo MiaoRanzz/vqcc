@@ -1,7 +1,7 @@
 """Sign-aware constrained proximal steps for fixed-word DFTHC weights.
 
 Use a weighted L1 local model of Lambda and solve its three-dimensional dual
-on the constraint tangent plane. Newton retraction keeps newly zero entries at
+on the active constraint tangent plane. Newton retraction keeps newly zero entries at
 zero; subsequent proximal steps may reactivate them. Accept only actual Lambda
 decrease with the official residual/gap equalities. Numerical screening only.
 """
@@ -57,6 +57,7 @@ def main():
     p.add_argument('--output-dir',type=Path,required=True)
     p.add_argument('--cache',type=Path,required=True)
     p.add_argument('--iterations',type=int,default=500)
+    p.add_argument('--error1-inequality',action='store_true',help='Keep one-body residual slack until its bound becomes active')
     p.add_argument('--initial-step',type=float,default=1e-4)
     p.add_argument('--step-growth',type=float,default=2.)
     p.add_argument('--initial',type=Path)
@@ -76,6 +77,7 @@ def main():
         initial=dict(np.load(args.initial,allow_pickle=False))
         x=pack(initial['w'],initial['d']+initial['w'].sum(axis=1))
     target_error=.01999990;target_gap=3.9148990
+    error1_active=not args.error1_inequality
     calls=0;accepted=0;best=x.copy();best_metrics=model.evaluate(*unpack(x));initial_metrics=best_metrics.copy()
     screen=args.output_dir.parent/'screen';screen.mkdir(exist_ok=True)
     trace=(screen/'trace.jsonl').open('w')
@@ -88,6 +90,7 @@ def main():
             gw,gd=g[key];return pack(gw-gd[:,None,:],gd)*scale
         jac=np.array([convert('error_1_squared',1/target_error**2),convert('error_2_squared',1/target_error**2),convert('E_gap',10)])
         c=np.array([(m['error_1']/target_error)**2-1,(m['error_2']/target_error)**2-1,(m['E_gap']-target_gap)*10])
+        if not error1_active:c,jac=c[1:],jac[1:]
         h=d+w.sum(axis=1);l1=np.abs(w).sum(axis=1)+np.abs(h)
         weights=pack(np.broadcast_to(.5*l1[:,None,:],shape),.5*l1)/300
         return m['Lambda']/300,convert('Lambda',1/300),c,jac,m,weights
@@ -101,9 +104,15 @@ def main():
         return None,None
     step=args.initial_step;status='iteration_limit';total_zeroed=total_reactivated=0;recent_lambda=[]
     try:
-        x,info=retract(x)
+        initial_x=x.copy();x,info=retract(x)
+        if args.error1_inequality and x is not None and info[4]['error_1']>target_error:
+            error1_active=True;x,info=retract(initial_x)
         if x is None:raise RuntimeError('Initial constraint retraction failed')
         for iteration in range(args.iterations):
+            if not error1_active and info[4]['error_1']>=target_error*(1-1e-4):
+                error1_active=True;x,info=retract(x)
+                if x is None:raise RuntimeError('Active error1 retraction failed')
+                step=args.initial_step
             f,g,c,jac,m,weights=info
             if m['lambda_eff']<best_metrics['lambda_eff']:best=x.copy();best_metrics=m.copy()
             accepted_here=False
@@ -114,14 +123,14 @@ def main():
                 slope=float(smooth@d+weights@(np.abs(y)-np.abs(x)))
                 if slope>=0:step*=.5;continue
                 trial,trial_info=retract(y)
-                if trial is not None and trial_info[0]<=f+1e-4*slope and trial_info[0]<f-1e-14:
+                if trial is not None and (not args.error1_inequality or trial_info[4]['error_1']<=target_error+1e-12) and trial_info[0]<=f+1e-4*slope and trial_info[0]<f-1e-14:
                     accepted_here=True;break
                 step*=.5
             if not accepted_here:status='line_search_stalled';break
             zeroed=int(np.count_nonzero((x!=0)&(trial==0)))
             reactivated=int(np.count_nonzero((x==0)&(trial!=0)))
             total_zeroed+=zeroed;total_reactivated+=reactivated
-            row=dict(iteration=iteration,calls=calls,step=step,backtracks=backtrack,metrics=trial_info[4],
+            row=dict(iteration=iteration,calls=calls,error1_active=error1_active,step=step,backtracks=backtrack,metrics=trial_info[4],
                      proximal=prox,zeroed=zeroed,reactivated=reactivated,zeros=int(np.count_nonzero(trial==0)),
                      elapsed_seconds=time.monotonic()-start)
             trace.write(json.dumps(row)+'\n');trace.flush()
@@ -155,6 +164,7 @@ def main():
     code=output.parent/'code';code.mkdir(exist_ok=True)
     for f in [Path(__file__),Path(__file__).with_name('dfthcsos_fixed_words.py')]:shutil.copy2(f,code/f.name)
     report=dict(kind='fixed_word_constrained_proximal_refit',official_validation=False,status=status,
+        error1_inequality=args.error1_inequality,error1_active_final=error1_active,
         source_npz=str(source.resolve()),source_sha256=sha256(source),generator_sha256=sha256(Path(__file__)),
         model_sha256=sha256(Path(__file__).with_name('dfthcsos_fixed_words.py')),argv=sys.argv,
         python_executable=sys.executable,python_prefix=sys.prefix,initial_metrics=initial_metrics,metrics=metrics,
