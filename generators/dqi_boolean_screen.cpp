@@ -71,7 +71,7 @@ struct File {
     uint32_t operand(size_t offset,size_t i) const {uint32_t v;std::memcpy(&v,raw.data()+offset+4*i,4);return v;}
 };
 int main(int argc,char**argv) try {
-    if(argc<5 || argc>7) throw std::runtime_error("usage: scanner source.kmb proofs.tsv summary.json term_cap [xor_cache_limit] [classical_guards]");
+    if(argc<5 || argc>8) throw std::runtime_error("usage: scanner source.kmb proofs.tsv summary.json term_cap [xor_cache_limit] [classical_guards] [borrowed_only]");
     auto start=std::chrono::steady_clock::now();
     File f(argv[1]); const uint8_t magic[]={0xd7,0x50,0xc7,0xd5,0xc3,0x29,0xd3,0x26,0xe3,0xcc,0x9f,0x68,0x34,0xf2,0xb8,0xbf};
     if(f.raw.size()<104||std::memcmp(f.raw.data(),magic,16))throw std::runtime_error("magic");
@@ -80,7 +80,12 @@ int main(int argc,char**argv) try {
     uint32_t nq=f.get<uint32_t>(),nb=f.get<uint32_t>(),nr=f.get<uint32_t>();
     std::array<uint64_t,9> count;for(auto &n:count)n=f.get<uint64_t>();
     Algebra alg(std::stoul(argv[4]),argc>=6?std::stoul(argv[5]):0);std::vector<Expr> state(nq),bits(nb);
-    bool guards=argc==7 && std::stoul(argv[6]);
+    bool guards=argc>=7 && std::stoul(argv[6]);
+    bool borrowed_only=argc==8 && std::stoul(argv[7]);
+    if(borrowed_only && guards)throw std::runtime_error("borrowed proof requires unconditional gates");
+    struct Gate { uint64_t op; std::array<uint32_t,3> q; };
+    std::vector<Gate> consecutive;
+    uint64_t borrowed_uncomputes=0;
     std::vector<Expr> stack{Expr{0}};
     for(uint32_t r=0;r<nr;r++) {
         if(f.get<uint64_t>()!=0)throw std::runtime_error("register packet");
@@ -115,6 +120,7 @@ int main(int argc,char**argv) try {
         if(t==0x81){depth++;if(guards)stack.push_back(alg.mul(stack.back(),bits[condition]));continue;}
         if(t==1){if(--depth<0)throw std::runtime_error("condition stack");if(guards)stack.pop_back();continue;}
         bool cond=(t&0x80)||depth>0;
+        if(t!=0x31 || cond)consecutive.clear();
         if(guards) {
             Expr active=(t&0x80)?alg.mul(stack.back(),bits[condition]):stack.back();
             if(active.empty()) {
@@ -145,8 +151,27 @@ int main(int argc,char**argv) try {
             else if(delta==state[q[0]]){kind="cx_a";linear++;}
             else if(delta==state[q[1]]){kind="cx_b";linear++;}
             else if(delta==state[q[2]]){kind="hmr";uncompute++;}
-            if(!kind.empty())proof<<i<<'\t'<<kind<<'\t'<<q[0]<<'\t'<<q[1]<<'\t'<<q[2]<<'\n';
-            state[q[2]]=alg.add(state[q[2]],delta);break;
+            if(!kind.empty() && !borrowed_only)proof<<i<<'\t'<<kind<<'\t'<<q[0]<<'\t'<<q[1]<<'\t'<<q[2]<<'\n';
+            state[q[2]]=alg.add(state[q[2]],delta);
+            if(borrowed_only) {
+                consecutive.push_back({i,q});
+                if(consecutive.size()>4)consecutive.erase(consecutive.begin());
+                if(consecutive.size()==4 && state[q[2]].empty()) {
+                    auto A=consecutive[0].q,B=consecutive[1].q;
+                    std::vector<uint32_t> wires={A[0],A[1],A[2],B[1],B[2]};
+                    std::sort(wires.begin(),wires.end());
+                    // Four contiguous unconditional gates implement t ^= a*b*c,
+                    // restoring arbitrary dirty d. Proving t=0 afterwards
+                    // proves the pre-block target was exactly a*b*c.
+                    if(A==consecutive[2].q && B==q && A[2]==B[0]
+                       && consecutive[3].op-consecutive[0].op==3
+                       && std::adjacent_find(wires.begin(),wires.end())==wires.end()) {
+                        proof<<consecutive[0].op<<"\tborrowed3\t"<<A[0]<<'\t'<<A[1]<<'\t'<<B[2]<<'\n';
+                        borrowed_uncomputes++;consecutive.clear();
+                    }
+                }
+            }
+            break;
         }
         case 0x30: {
             ccz++; if(cond)break;
@@ -164,7 +189,7 @@ int main(int argc,char**argv) try {
                         if(phase==alg.mul(state[q[k]],state[q[(k+1)%3]]))kind="ccz_cz"+std::to_string(k);
                 }
             }
-            if(!kind.empty()){phase_reductions++;proof<<i<<'\t'<<kind<<'\t'<<q[0]<<'\t'<<q[1]<<'\t'<<q[2]<<'\n';}
+            if(!kind.empty()){phase_reductions++;if(!borrowed_only)proof<<i<<'\t'<<kind<<'\t'<<q[0]<<'\t'<<q[1]<<'\t'<<q[2]<<'\n';}
             break;
         }
         case 0x32: cswap++; if(cond){fresh_target(1);fresh_target(2);}else {
@@ -174,7 +199,7 @@ int main(int argc,char**argv) try {
             if(delta.empty())kind="cswap_zero";
             else if(delta==difference)kind="cswap_swap";
             else if(delta==state[q[0]])kind="cswap_cx";
-            if(!kind.empty()){swap_reductions++;proof<<i<<'\t'<<kind<<'\t'<<q[0]<<'\t'<<q[1]<<'\t'<<q[2]<<'\n';}
+            if(!kind.empty()){swap_reductions++;if(!borrowed_only)proof<<i<<'\t'<<kind<<'\t'<<q[0]<<'\t'<<q[1]<<'\t'<<q[2]<<'\n';}
             state[q[1]]=alg.add(state[q[1]],delta);state[q[2]]=alg.add(state[q[2]],delta);
         }break;
         case 0x00:case 0x06:case 0x07:case 0x10:case 0x13:case 0x17:case 0x20:case 0x27:case 0x37:case 0x40:case 0x41:case 0x42:case 0x47: break;
@@ -185,7 +210,7 @@ int main(int argc,char**argv) try {
     if(depth)throw std::runtime_error("unclosed conditions");
     for(int j=1;j<=5;j++)if(ix[j]!=count[j])throw std::runtime_error("stream count");
     double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
-    std::ofstream out(argv[3]);out<<"{\"operations\":"<<count[0]<<",\"qubits\":"<<nq<<",\"bits\":"<<nb<<",\"ccx\":"<<ccx<<",\"conditional_ccx\":"<<conditional<<",\"hmr_replacements\":"<<uncompute<<",\"zero_replacements\":"<<zero<<",\"linear_replacements\":"<<linear<<",\"term_cap\":"<<alg.cap<<",\"expression_overflows\":"<<alg.overflows<<" ,\"xor_cache_limit\":"<<alg.xor_cache_limit<<",\"xor_recoveries\":"<<alg.recovered<<",\"product_atoms\":"<<alg.products.size()<<",\"atoms\":"<<alg.next-1<<",\"elapsed_seconds\":"<<elapsed<<",\"ccz\":"<<ccz<<",\"cswap\":"<<cswap<<",\"phase_reductions\":"<<phase_reductions<<",\"swap_reductions\":"<<swap_reductions<<",\"classical_guards\":"<<guards<<",\"false_guard_operations\":"<<false_guards<<",\"true_guard_operations\":"<<true_guards<<",\"dead_three_qubit_gates\":"<<dead_three<<"}\n";
+    std::ofstream out(argv[3]);out<<"{\"operations\":"<<count[0]<<",\"qubits\":"<<nq<<",\"bits\":"<<nb<<",\"ccx\":"<<ccx<<",\"conditional_ccx\":"<<conditional<<",\"hmr_replacements\":"<<uncompute<<",\"zero_replacements\":"<<zero<<",\"linear_replacements\":"<<linear<<",\"term_cap\":"<<alg.cap<<",\"expression_overflows\":"<<alg.overflows<<" ,\"xor_cache_limit\":"<<alg.xor_cache_limit<<",\"xor_recoveries\":"<<alg.recovered<<",\"product_atoms\":"<<alg.products.size()<<",\"atoms\":"<<alg.next-1<<",\"elapsed_seconds\":"<<elapsed<<",\"ccz\":"<<ccz<<",\"cswap\":"<<cswap<<",\"phase_reductions\":"<<phase_reductions<<",\"swap_reductions\":"<<swap_reductions<<",\"classical_guards\":"<<guards<<",\"false_guard_operations\":"<<false_guards<<",\"true_guard_operations\":"<<true_guards<<",\"dead_three_qubit_gates\":"<<dead_three<<",\"borrowed_uncomputes\":"<<borrowed_uncomputes<<"}\n";
     if(!proof||!out)throw std::runtime_error("output write");
     return 0;
 } catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}
