@@ -34,12 +34,15 @@ def main():
     p.add_argument('--warm-line-search',action='store_true',help='Start the next L-BFGS line search at twice the last accepted step, capped at one')
     p.add_argument('--warm-radius',action='store_true',help='Warm-start using the last displacement norm instead of an unscaled step')
     p.add_argument('--residual-metric',action='store_true',help='Use a fixed diagonal residual-curvature metric for L-BFGS and retraction')
+    p.add_argument('--block-residual-metric',action='store_true',help='Use fixed (r,c) column blocks including H2_I, with a 1e-3 median-diagonal ridge')
     p.add_argument('--max-seconds',type=float,help='Bound optimizer time for equal-wall-time comparisons')
     p.add_argument('--iterations',type=int,default=1000)
     p.add_argument('--stop-by',required=True)
     args=p.parse_args();start=time.monotonic();stop=datetime.fromisoformat(args.stop_by)
     if args.warm_line_search and args.warm_radius:p.error('Choose only one line-search warm start')
-    if args.residual_metric and args.orthantwise:p.error('Residual metric is currently defined for the smooth fixed-face route')
+    if args.residual_metric and args.block_residual_metric:p.error('Choose one residual metric')
+    metric_active=args.residual_metric or args.block_residual_metric
+    if metric_active and args.orthantwise:p.error('Residual metric is currently defined for the smooth fixed-face route')
     if stop.tzinfo is None:raise ValueError('Timezone required')
     source=args.parent_output/'submission.npz';arrays=dict(np.load(source,allow_pickle=False));inputs=load_inputs(source)
     if args.brot is not None:
@@ -52,8 +55,10 @@ def main():
     def unpack(x):
         w=x[:size].reshape(shape);h=x[size:].reshape(shape[0],shape[2]);return w,h-w.sum(axis=1)
     fixed=pack(inputs.w,arrays['H2_I']);mask=np.abs(fixed)>args.freeze_below
-    from dfthcsos_curvature import residual_diagonal,inverse_metric,tangent_project,normal_correction
+    from dfthcsos_curvature import residual_diagonal,inverse_metric
+    from dfthcsos_block_metric import BlockMetric,apply_metric,tangent as tangent_project,correction as normal_correction
     metric=inverse_metric(residual_diagonal(model,inputs.w,inputs.W)[mask]) if args.residual_metric else np.ones(int(mask.sum()))
+    if args.block_residual_metric:metric=BlockMetric(model,inputs.w,inputs.W,mask)
     x=fixed[mask].copy();target_error=.01999990;target_gap=3.9148990;calls=0
     screen=args.output_dir.parent/'screen';screen.mkdir(exist_ok=True)
     np.savez(screen/'model-cache.npz',**model.cache())
@@ -94,7 +99,7 @@ def main():
                 diagnostics['retraction_sign_crossings']+=int(np.count_nonzero(crossed))
                 candidate[crossed]=0;y[active]=candidate
             else:
-                if args.residual_metric:y=y-normal_correction(c,jac,metric)
+                if metric_active:y=y-normal_correction(c,jac,metric)
                 else:
                     norms=np.linalg.norm(jac,axis=1);u=jac/norms[:,None]
                     y=y-u.T@np.linalg.solve(u@u.T,c/norms)
@@ -132,12 +137,12 @@ def main():
                 alpha=rho*np.dot(s,direction);alphas.append(alpha);direction-=alpha*y
             if pairs:
                 s,y,_=pairs[-1];direction*=np.dot(s,y)/np.dot(y,y)
-            if args.residual_metric:direction*=metric
+            if metric_active:direction=apply_metric(metric,direction)
             for (s,y,rho),alpha in zip(pairs,reversed(alphas)):
                 direction+=s*(alpha-rho*np.dot(y,direction))
-            direction=-face_project(direction,jac,active) if args.orthantwise else -(tangent_project(direction,jac,metric) if args.residual_metric else project(direction,jac))
+            direction=-face_project(direction,jac,active) if args.orthantwise else -(tangent_project(direction,jac,metric) if metric_active else project(direction,jac))
             if np.dot(direction,pg if args.orthantwise else g)>=0:
-                direction=-tangent_project(metric*g,jac,metric) if args.residual_metric else -pg;pairs=[]
+                direction=-tangent_project(apply_metric(metric,g),jac,metric) if metric_active else -pg;pairs=[]
             slope=float(np.dot(direction,pg if args.orthantwise else g));step=1.0 if pairs else .01
             if args.warm_line_search and pairs and last_step is not None:step=min(1.,2*last_step)
             if args.warm_radius and pairs and last_displacement is not None:
@@ -193,10 +198,13 @@ def main():
     circuits=load_circuits(output);stats=circuit_costs(circuits)
     resources=resource_costs(final_inputs,circuits,int(arrays['brot']),2*sum(s['max_magic'] for s in stats))
     code=output.parent/'code';code.mkdir(exist_ok=True)
-    for f in [Path(__file__),Path(__file__).with_name('dfthcsos_fixed_words.py'),Path(__file__).with_name('dfthcsos_orthant.py'),Path(__file__).with_name('dfthcsos_curvature.py')]:shutil.copy2(f,code/f.name)
+    for f in [Path(__file__),Path(__file__).with_name('dfthcsos_fixed_words.py'),Path(__file__).with_name('dfthcsos_orthant.py'),Path(__file__).with_name('dfthcsos_curvature.py'),Path(__file__).with_name('dfthcsos_block_metric.py')]:shutil.copy2(f,code/f.name)
     report=dict(kind='fixed_word_sparse_face_manifold_refit',official_validation=False,status=status,error1_inequality=args.error1_inequality,error1_active_final=error1_active,source_npz=str(source.resolve()),source_sha256=sha256(source),generator_sha256=sha256(Path(__file__)),model_sha256=sha256(Path(__file__).with_name('dfthcsos_fixed_words.py')),argv=sys.argv,python_executable=sys.executable,python_prefix=sys.prefix,initial_metrics=initial_metrics,metrics=metrics,predicted_metrics=best_metrics,resources=resources,passes_numerical_gates=passes_accuracy(metrics),conditional_cost=metrics['lambda_eff']*resources['toffoli']*resources['qubits'],frozen_variables=int((~mask).sum()),active_variables=int(mask.sum()),accepted_steps=accepted,calls=calls,elapsed_seconds=time.monotonic()-start,artifacts=[dict(path=f.name,sha256=sha256(f)) for f in sorted(output.iterdir())],input_cache_sha256=sha256(args.cache) if args.cache else None)
     report.update(orthantwise=args.orthantwise,max_seconds=args.max_seconds,diagnostics=diagnostics,
-                  residual_metric=args.residual_metric,metric_range=[float(metric.min()),float(metric.max())],
+                  residual_metric=args.residual_metric,block_residual_metric=args.block_residual_metric,
+                  metric_range=metric.summary['inverse_diagonal_range'] if args.block_residual_metric else [float(metric.min()),float(metric.max())],
+                  block_metric=metric.summary if args.block_residual_metric else None,
+                  block_metric_sha256=sha256(Path(__file__).with_name('dfthcsos_block_metric.py')),
                   curvature_sha256=sha256(Path(__file__).with_name('dfthcsos_curvature.py')),
                   orthant_sha256=sha256(Path(__file__).with_name('dfthcsos_orthant.py')),
                   warm_line_search=args.warm_line_search,warm_radius=args.warm_radius,accepted_stepsizes=accepted_stepsizes)
