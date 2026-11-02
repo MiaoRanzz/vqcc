@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exact quadratic AND bounds after retaining a sequential lookup intermediate.
 
-Controls range over affine forms in the original external control functions and
-one retained first-target function. Enumerate the complete truth-table kernel,
+Controls range over affine forms in the later group's control functions and
+one retained first-output-group function (including its incoming target value). Enumerate the complete truth-table kernel,
 so Boolean relations on the 256 reachable addresses are included. The alternating
 quadratic matrix of each representation has rank at most twice its AND count.
 This bounds sum-of-products rewrites in this control span, not arbitrary circuits
@@ -87,38 +87,43 @@ def screen(lines, lo, hi):
     initial.update(INPUTS)
     for line in lines[start:lo]:
         step(initial, line)
-    neutral, actual = initial.copy(), initial.copy()
-    external, gates, controls = [], [], []
-    for i,line in enumerate(lines[lo:hi], lo):
-        if line.startswith('CCX '):
-            a,b,target = map(int,Q.findall(line))
-            external.extend([neutral[a], neutral[b]])
-            controls.append([actual[a], actual[b]])
-            gates.append(dict(index=i, target=target))
-        step(neutral, line, skip_ccx=True)
-        step(actual, line)
+    gates = [dict(index=i, target=int(Q.findall(line)[-1]))
+             for i,line in enumerate(lines[lo:hi], lo) if line.startswith('CCX ')]
     if len(gates) < 3:
         raise ValueError('Require a multi-product sequential window')
-    retained, target = gates[0]['target'], gates[1]['target']
-    if retained == target or any(g['target'] != target for g in gates[1:]):
-        raise ValueError('Template requires one retained gate followed by one target group')
-    if any(neutral[q] != actual[q] for q in initial if q not in (retained,target)):
+    retained = gates[0]['target']
+    split = next((i for i,g in enumerate(gates) if g['target'] != retained), len(gates))
+    if split == len(gates):
+        raise ValueError('Template requires two output groups')
+    target = gates[split]['target']
+    if any(g['target'] != target for g in gates[split:]):
+        raise ValueError('Template requires one retained output group followed by one target group')
+    neutral, actual = initial.copy(), initial.copy()
+    external, controls = [], []
+    second_start = gates[split]['index']
+    for i,line in enumerate(lines[lo:hi], lo):
+        if line.startswith('CCX '):
+            a,b,_ = map(int,Q.findall(line))
+            if i >= second_start:
+                external.extend([neutral[a], neutral[b]])
+            controls.append([actual[a], actual[b]])
+        # Preserve the complete first output group, including its old target.
+        # Only the later group's products are removed in the neutral trajectory.
+        step(neutral, line, skip_ccx=i >= second_start)
+        step(actual, line)
+    if any(neutral[q] != actual[q] for q in initial if q != target):
         raise ValueError('Nonlinear effects escape into other live wires')
-    if neutral[retained] != 0:
-        raise ValueError('First target must initially be clean in this template')
-    values = [v for _,v in linear_basis(dict(enumerate(external)),-1)]
-    values.append(actual[retained])
-    if len(linear_basis(dict(enumerate(values)),-1)) != len(values):
-        raise ValueError('Retained intermediate must enlarge the external span')
+    pool = dict(enumerate(external+[actual[retained]]))
+    values = [v for _,v in linear_basis(pool,-1)]
     affine = [ALL]+values
-    if any(solve_columns(affine,v) is None for pair in controls[1:] for v in pair):
+    if any(solve_columns(affine,v) is None for pair in controls[split:] for v in pair):
         raise ValueError('Original later controls not in the tested affine span')
     # These functions must also be available after the original affine tail.
     physical = [ALL]+[v for q,v in actual.items() if q != target and v is not None]
     if any(solve_columns(physical,v) is None for v in values):
         raise ValueError('Control forms unavailable without the rewritten target')
     result = quadratic_bound(values, actual[target]^neutral[target])
-    original = len(gates)-1
+    original = len(gates)-split
     if result['status'] == 'complete':
         if result['minimum_and_lower_bound'] > original:
             raise AssertionError('Bound exceeds the original construction')
@@ -127,10 +132,10 @@ def screen(lines, lo, hi):
     else:
         decision = result['status']
     return dict(window=[lo,hi], retained_target=retained, target=target,
-        retained_gates=1, original_remaining_and=original,
+        retained_gates=split, original_remaining_and=original,
         original_total_and=len(gates), controls_truth_tables=values,
         target_delta=actual[target]^neutral[target], bound=result, decision=decision,
-        scope='Retain the first AND; remaining gates are products of affine forms in the recorded control functions plus an affine output correction in that same span. No new nonlinear control intermediates or outside-span functions.')
+        scope='Retain the complete first output group; remaining gates are products of affine forms in the recorded control functions plus an affine output correction in that same span. No new nonlinear control intermediates or outside-span functions.')
 
 
 def main():

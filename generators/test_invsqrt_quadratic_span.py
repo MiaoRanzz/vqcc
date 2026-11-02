@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import unittest
-from invsqrt_quadratic_span import quadratic_bound, relations
+from invsqrt_quadratic_span import quadratic_bound, relations, screen
 
 
 def tables(bits):
@@ -31,6 +31,27 @@ class QuadraticSpanTests(unittest.TestCase):
             for i,column in enumerate(columns):
                 if mask>>i&1:value^=column
             self.assertEqual(value,0)
+
+    def test_retain_complete_multi_and_output_group(self):
+        lines = ['unused']*240 + ['R q22', 'R q23',
+            'CCX q14 q15 q22', 'CCX q16 q17 q22',
+            'CCX q22 q18 q23', 'CCX q19 q20 q23', 'HMR q24 b12600']
+        result = screen(lines, 242, 246)
+        self.assertEqual(result['retained_gates'], 2)
+        self.assertEqual(result['original_remaining_and'], 2)
+        self.assertEqual(result['bound']['minimum_and_lower_bound'], 2)
+        self.assertEqual(result['decision'], 'rejected_by_exact_quadratic_bound')
+
+    def test_old_retained_target_and_affine_coupling_are_preserved(self):
+        lines = ['unused']*240 + ['R q22', 'R q23', 'CX q14 q22',
+            'CCX q14 q15 q22', 'CCX q16 q17 q22', 'CX q22 q23',
+            'CCX q22 q18 q23', 'CCX q19 q20 q23', 'HMR q24 b12600']
+        result = screen(lines, 243, 248)
+        a,b,c,d,e,f,g,h = tables(8)
+        retained = a ^ (a & b) ^ (c & d)
+        self.assertEqual(result['retained_gates'], 2)
+        self.assertEqual(result['target_delta'], (retained & e) ^ (f & g))
+        self.assertEqual(result['bound']['minimum_and_lower_bound'], 2)
 
     def test_unrepresentable_target_and_budget_are_not_impossibility(self):
         a,b,c=tables(3)
