@@ -26,7 +26,13 @@ def main():
     p.add_argument('--report', type=Path, required=True)
     p.add_argument('--brot', type=int, required=True)
     p.add_argument('--freeze-below', type=float, default=1e-5)
+    p.add_argument('--block-relative-floors', type=float, nargs='+', help='Compare only these column-block ridges at the same point')
+    p.add_argument('--predicted-drops', type=float, nargs='+', default=[1e-4, 1e-3, 3e-3])
     args = p.parse_args()
+    if any(not 0 < x <= 1 for x in (args.block_relative_floors or [])):
+        p.error('Block relative floors must be in (0,1]')
+    if any(not np.isfinite(x) or x <= 0 for x in args.predicted_drops):
+        p.error('Predicted drops must be positive and finite')
     if args.report.exists():
         p.error('Use a distinct report path')
     started = time.monotonic()
@@ -73,16 +79,27 @@ def main():
     if max(abs(c)) > 2e-8:
         raise ValueError('This experiment requires the pinned active-constraint point')
     build_start = time.monotonic()
-    block = BlockMetric(model, inputs.w, inputs.W, mask)
+    blocks = {}
+    if args.block_relative_floors:
+        methods = []
+        for floor in args.block_relative_floors:
+            name = f'column_block_ridge_{floor:g}'
+            metric = BlockMetric(model, inputs.w, inputs.W, mask, relative_floor=floor)
+            blocks[name] = metric.summary
+            methods.append((name, metric))
+    else:
+        block = BlockMetric(model, inputs.w, inputs.W, mask)
+        blocks['column_block'] = block.summary
+        diagonal = inverse_metric(residual_diagonal(model, inputs.w, inputs.W)[mask])
+        methods = [('diagonal', diagonal), ('ridge_diagonal', block.diagonal_control), ('column_block', block)]
     build_seconds = time.monotonic()-build_start
-    diagonal = inverse_metric(residual_diagonal(model, inputs.w, inputs.W)[mask])
     rows = []
-    for name, metric in [('diagonal', diagonal), ('ridge_diagonal', block.diagonal_control), ('column_block', block)]:
+    for name, metric in methods:
         direction = -tangent(apply_metric(metric, g), j, metric)
         slope = float(g@direction)
         if slope >= 0:
             raise ValueError('Expected descent tangent')
-        for predicted_drop in [1e-4, 1e-3, 3e-3]:
+        for predicted_drop in args.predicted_drops:
             begin = time.monotonic(); before = calls
             delta = direction*(predicted_drop/-slope)
             point = initial+delta
@@ -108,7 +125,7 @@ def main():
         parent_output=str(args.parent_output.resolve()), source_sha256=sha256(source),
         cache_sha256=sha256(args.cache), cache_parent_npz_sha256=sha256(cache_source),
         words_tree_match=True, model_matches_direct=True, initial_metrics=metrics,
-        active_variables=int(mask.sum()), block_metric=block.summary,
+        active_variables=int(mask.sum()), block_metric=blocks.get("column_block"), block_metrics=blocks,
         block_build_seconds=build_seconds, trials=rows, argv=sys.argv,
         generator_sha256=sha256(Path(__file__)),
         metric_sha256=sha256(Path(__file__).with_name('dfthcsos_block_metric.py')),

@@ -34,12 +34,15 @@ def main():
     p.add_argument('--warm-line-search',action='store_true',help='Start the next L-BFGS line search at twice the last accepted step, capped at one')
     p.add_argument('--warm-radius',action='store_true',help='Warm-start using the last displacement norm instead of an unscaled step')
     p.add_argument('--residual-metric',action='store_true',help='Use a fixed diagonal residual-curvature metric for L-BFGS and retraction')
-    p.add_argument('--block-residual-metric',action='store_true',help='Use fixed (r,c) column blocks including H2_I, with a 1e-3 median-diagonal ridge')
+    p.add_argument('--block-residual-metric',action='store_true',help='Use fixed (r,c) column blocks including H2_I')
+    p.add_argument('--block-relative-floor',type=float,default=1e-3,help='Positive relative ridge for the column-block metric (at most one)')
     p.add_argument('--max-seconds',type=float,help='Bound optimizer time for equal-wall-time comparisons')
     p.add_argument('--initial-retraction',choices=['newton','damped','lbfgs'],default='newton')
     p.add_argument('--iterations',type=int,default=1000)
     p.add_argument('--stop-by',required=True)
     args=p.parse_args();start=time.monotonic();stop=datetime.fromisoformat(args.stop_by)
+    if not 0 < args.block_relative_floor <= 1:p.error('Block relative floor must be in (0,1]')
+    if args.block_relative_floor != 1e-3 and not args.block_residual_metric:p.error('Block relative floor requires --block-residual-metric')
     if args.warm_line_search and args.warm_radius:p.error('Choose only one line-search warm start')
     if args.residual_metric and args.block_residual_metric:p.error('Choose one residual metric')
     metric_active=args.residual_metric or args.block_residual_metric
@@ -59,7 +62,7 @@ def main():
     from dfthcsos_curvature import residual_diagonal,inverse_metric
     from dfthcsos_block_metric import BlockMetric,apply_metric,tangent as tangent_project,correction as normal_correction
     metric=inverse_metric(residual_diagonal(model,inputs.w,inputs.W)[mask]) if args.residual_metric else np.ones(int(mask.sum()))
-    if args.block_residual_metric:metric=BlockMetric(model,inputs.w,inputs.W,mask)
+    if args.block_residual_metric:metric=BlockMetric(model,inputs.w,inputs.W,mask,relative_floor=args.block_relative_floor)
     x=fixed[mask].copy();target_error=.01999990;target_gap=3.9148990;calls=0
     screen=args.output_dir.parent/'screen';screen.mkdir(exist_ok=True)
     np.savez(screen/'model-cache.npz',**model.cache())
