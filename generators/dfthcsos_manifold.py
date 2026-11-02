@@ -36,6 +36,7 @@ def main():
     p.add_argument('--residual-metric',action='store_true',help='Use a fixed diagonal residual-curvature metric for L-BFGS and retraction')
     p.add_argument('--block-residual-metric',action='store_true',help='Use fixed (r,c) column blocks including H2_I, with a 1e-3 median-diagonal ridge')
     p.add_argument('--max-seconds',type=float,help='Bound optimizer time for equal-wall-time comparisons')
+    p.add_argument('--initial-retraction',choices=['newton','damped','lbfgs'],default='newton')
     p.add_argument('--iterations',type=int,default=1000)
     p.add_argument('--stop-by',required=True)
     args=p.parse_args();start=time.monotonic();stop=datetime.fromisoformat(args.stop_by)
@@ -118,7 +119,20 @@ def main():
     status='iteration_limit';pairs=[];accepted=0;last_step=None;last_displacement=None;accepted_stepsizes=[]
     try:
         initial_x=x.copy()
-        x,info=retract(x)
+        if args.initial_retraction!='newton':
+            from dfthcsos_retraction import damped_retract,lbfgs_retract
+            # A violated inequality must participate before the first step.
+            error1_active=bool(error1_active or initial_metrics['error_1']>target_error)
+            with (screen/'initial-retraction.jsonl').open('w') as recovery_trace:
+                def record_recovery(row):
+                    row['elapsed_seconds']=time.monotonic()-start
+                    row['error1_active']=error1_active
+                    recovery_trace.write(json.dumps(row)+'\n');recovery_trace.flush()
+                recover=damped_retract if args.initial_retraction=='damped' else lbfgs_retract
+                x,info,recovery_status=recover(x,evalpoint,metric,record=record_recovery)
+                record_recovery(dict(kind='result',status=recovery_status))
+        else:
+            x,info=retract(x)
         if args.error1_inequality and x is not None and info[4]['error_1']>target_error:
             error1_active=True;x,info=retract(initial_x)
         if x is None:raise RuntimeError('Initial constraint retraction failed')
@@ -198,9 +212,9 @@ def main():
     circuits=load_circuits(output);stats=circuit_costs(circuits)
     resources=resource_costs(final_inputs,circuits,int(arrays['brot']),2*sum(s['max_magic'] for s in stats))
     code=output.parent/'code';code.mkdir(exist_ok=True)
-    for f in [Path(__file__),Path(__file__).with_name('dfthcsos_fixed_words.py'),Path(__file__).with_name('dfthcsos_orthant.py'),Path(__file__).with_name('dfthcsos_curvature.py'),Path(__file__).with_name('dfthcsos_block_metric.py')]:shutil.copy2(f,code/f.name)
+    for f in [Path(__file__),Path(__file__).with_name('dfthcsos_fixed_words.py'),Path(__file__).with_name('dfthcsos_orthant.py'),Path(__file__).with_name('dfthcsos_curvature.py'),Path(__file__).with_name('dfthcsos_block_metric.py'),Path(__file__).with_name('dfthcsos_retraction.py')]:shutil.copy2(f,code/f.name)
     report=dict(kind='fixed_word_sparse_face_manifold_refit',official_validation=False,status=status,error1_inequality=args.error1_inequality,error1_active_final=error1_active,source_npz=str(source.resolve()),source_sha256=sha256(source),generator_sha256=sha256(Path(__file__)),model_sha256=sha256(Path(__file__).with_name('dfthcsos_fixed_words.py')),argv=sys.argv,python_executable=sys.executable,python_prefix=sys.prefix,initial_metrics=initial_metrics,metrics=metrics,predicted_metrics=best_metrics,resources=resources,passes_numerical_gates=passes_accuracy(metrics),conditional_cost=metrics['lambda_eff']*resources['toffoli']*resources['qubits'],frozen_variables=int((~mask).sum()),active_variables=int(mask.sum()),accepted_steps=accepted,calls=calls,elapsed_seconds=time.monotonic()-start,artifacts=[dict(path=f.name,sha256=sha256(f)) for f in sorted(output.iterdir())],input_cache_sha256=sha256(args.cache) if args.cache else None)
-    report.update(orthantwise=args.orthantwise,max_seconds=args.max_seconds,diagnostics=diagnostics,
+    report.update(retraction_sha256=sha256(Path(__file__).with_name('dfthcsos_retraction.py')),initial_retraction=args.initial_retraction,orthantwise=args.orthantwise,max_seconds=args.max_seconds,diagnostics=diagnostics,
                   residual_metric=args.residual_metric,block_residual_metric=args.block_residual_metric,
                   metric_range=metric.summary['inverse_diagonal_range'] if args.block_residual_metric else [float(metric.min()),float(metric.max())],
                   block_metric=metric.summary if args.block_residual_metric else None,

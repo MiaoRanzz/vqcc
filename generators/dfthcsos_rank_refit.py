@@ -29,6 +29,7 @@ def main():
     p.add_argument('--cache-parent-output', type=Path, required=True)
     p.add_argument('--brot', type=int, required=True)
     p.add_argument('--max-seconds', type=float, default=180)
+    p.add_argument('--initial-retraction', choices=['newton','damped','lbfgs'], default='newton')
     p.add_argument('--stop-by', required=True)
     args = p.parse_args(); started = time.monotonic()
     stop = datetime.fromisoformat(args.stop_by)
@@ -38,7 +39,7 @@ def main():
         p.error('Insufficient time for refit and checkpoint')
     candidate = args.output_dir.parent
     screen = candidate/'screen'; screen.mkdir(exist_ok=True)
-    seed = screen/'rank-initial-output'; seed.mkdir()
+    seed = screen/'rank-initial-output'; seed.mkdir(exist_ok=True)
     source = args.parent_output/'submission.npz'
     arrays = dict(np.load(source, allow_pickle=False))
     with np.load(args.cache_parent_output/'submission.npz', allow_pickle=False) as other:
@@ -79,25 +80,35 @@ def main():
         '--output-dir', str(args.output_dir), '--cache', str(args.cache), '--brot', str(args.brot),
         '--freeze-below', '1e-5', '--error1-inequality', '--stall-window', '20',
         '--minimum-lambda-progress', '1e-8', '--block-residual-metric', '--max-seconds', str(args.max_seconds),
-        '--iterations', '10000', '--stop-by', args.stop_by]
+        '--iterations', '10000', '--initial-retraction', args.initial_retraction, '--stop-by', args.stop_by]
     log = candidate/'refit.log'
     with log.open('w') as stream:
         result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT,
                                 timeout=args.max_seconds+60)
     if result.returncode:
-        if 'Initial constraint retraction failed' not in log.read_text():
+        if not any(message in log.read_text() for message in ('Initial constraint retraction failed', 'No feasible output')):
             raise RuntimeError(f'Unexpected fitter failure; inspect {log}')
         final = dict(report, decision='rejected_initial_retraction_failed',
-                     scope='This initialization and ten-step block-metric Newton retraction only; not rank39 infeasibility')
+                     scope=f'This initialization and {args.initial_retraction} block-metric retraction only; not rank39 infeasibility')
     else:
         final = json.loads((candidate/'generation.json').read_text())
         final['rank_initialization'] = report
+    recovery = screen/'initial-retraction.jsonl'
+    if recovery.exists():
+        rows = [json.loads(line) for line in recovery.read_text().splitlines()]
+        measurements = [row for row in rows if 'merit' in row]
+        if measurements:
+            final['recovery_summary'] = dict(method=args.initial_retraction,
+                initial=measurements[0], best=min(measurements, key=lambda row: row['merit']),
+                evaluations=len(measurements), last_record=rows[-1],
+                trace_sha256=sha256(recovery))
+    final['retraction_sha256'] = sha256(Path(__file__).with_name('dfthcsos_retraction.py'))
     final['rank_refit_command'] = command
     final['rank_refit_elapsed_seconds'] = time.monotonic()-started
     (candidate/'generation.json').write_text(json.dumps(final, indent=2)+'\n')
     code = candidate/'code'; code.mkdir(exist_ok=True)
     for name in ('dfthcsos_rank_refit.py', 'dfthcsos_manifold.py', 'dfthcsos_fixed_words.py',
-                 'dfthcsos_block_metric.py', 'dfthcsos_curvature.py', 'dfthcsos_orthant.py'):
+                 'dfthcsos_block_metric.py', 'dfthcsos_curvature.py', 'dfthcsos_orthant.py', 'dfthcsos_retraction.py'):
         shutil.copy2(Path(__file__).with_name(name), code/name)
     print(json.dumps(dict(decision=final.get('decision', final.get('status')),
                          conditional_cost=final.get('conditional_cost'),
