@@ -110,5 +110,10 @@ def lbfgs_retract(x, evaluate, metric, *, record=lambda row: None,
                                        ftol=1e-15, gtol=1e-12))
     except Converged:
         return best[1], best[2], 'converged'
+    # Relative objective termination can precede our strict residual tolerance.
+    # Only near a root, finish with a few monotone normal corrections.
+    if np.max(np.abs(best[2][2])) < 1e-6:
+        return damped_retract(best[1], evaluate, metric, record=record,
+                              max_steps=10, tolerance=tolerance)
     status = 'residual_minimization_stalled' if result.success else str(result.message)
     return None, best[2], status
