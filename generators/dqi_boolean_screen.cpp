@@ -71,7 +71,7 @@ struct File {
     uint32_t operand(size_t offset,size_t i) const {uint32_t v;std::memcpy(&v,raw.data()+offset+4*i,4);return v;}
 };
 int main(int argc,char**argv) try {
-    if(argc<5 || argc>8) throw std::runtime_error("usage: scanner source.kmb proofs.tsv summary.json term_cap [xor_cache_limit] [classical_guards] [borrowed_only]");
+    if(argc<5 || (argc>8 && argc!=10)) throw std::runtime_error("usage: scanner source.kmb proofs.tsv summary.json term_cap [xor_cache_limit] [classical_guards] [borrowed_only] [query_ops.txt clean_wires.tsv]");
     auto start=std::chrono::steady_clock::now();
     File f(argv[1]); const uint8_t magic[]={0xd7,0x50,0xc7,0xd5,0xc3,0x29,0xd3,0x26,0xe3,0xcc,0x9f,0x68,0x34,0xf2,0xb8,0xbf};
     if(f.raw.size()<104||std::memcmp(f.raw.data(),magic,16))throw std::runtime_error("magic");
@@ -81,11 +81,26 @@ int main(int argc,char**argv) try {
     std::array<uint64_t,9> count;for(auto &n:count)n=f.get<uint64_t>();
     Algebra alg(std::stoul(argv[4]),argc>=6?std::stoul(argv[5]):0);std::vector<Expr> state(nq),bits(nb);
     bool guards=argc>=7 && std::stoul(argv[6]);
-    bool borrowed_only=argc==8 && std::stoul(argv[7]);
+    bool borrowed_only=argc>=8 && std::stoul(argv[7]);
     if(borrowed_only && guards)throw std::runtime_error("borrowed proof requires unconditional gates");
     struct Gate { uint64_t op; std::array<uint32_t,3> q; };
     std::vector<Gate> consecutive;
     uint64_t borrowed_uncomputes=0;
+    // Optional read-only observation before selected operations. Empty symbolic
+    // expressions certify zero on every input, including arbitrary measurements.
+    std::vector<uint64_t> queries;
+    std::ofstream clean;
+    size_t query_index=0;
+    if(argc==10) {
+        std::ifstream request(argv[8]); if(!request)throw std::runtime_error("query input");
+        uint64_t op;
+        while(request>>op)queries.push_back(op);
+        if(!request.eof() || !std::is_sorted(queries.begin(),queries.end()) ||
+           std::adjacent_find(queries.begin(),queries.end())!=queries.end())
+            throw std::runtime_error("queries must be distinct sorted integers");
+        clean.open(argv[9]); if(!clean)throw std::runtime_error("clean output");
+        clean<<"op\tdepth\tzero_wires\n";
+    }
     std::vector<Expr> stack{Expr{0}};
     for(uint32_t r=0;r<nr;r++) {
         if(f.get<uint64_t>()!=0)throw std::runtime_error("register packet");
@@ -108,6 +123,14 @@ int main(int argc,char**argv) try {
     std::ofstream proof(argv[2]);if(!proof)throw std::runtime_error("proof output");
     proof << "op\tkind\ta\tb\ttarget\n";
     for(uint64_t i=0;i<count[0];i++) {
+        if(query_index<queries.size() && queries[query_index]==i) {
+            clean<<i<<'\t'<<depth<<'\t';bool first=true;
+            for(uint32_t q=0;q<nq;q++)if(state[q].empty()) {
+                if(!first)clean<<',';
+                clean<<q;first=false;
+            }
+            clean<<'\n';query_index++;
+        }
         uint8_t t=f.raw[ot+i],base=t&0x7f; unsigned arity=(t>>4)&3;
         std::array<uint32_t,3> q{};
         int stream=arity==3?0:arity==2?3:5;
@@ -208,6 +231,8 @@ int main(int argc,char**argv) try {
         if(i%10000000==0)std::cerr<<i<<" ops, "<<uncompute+zero+linear<<" proofs\n";
     }
     if(depth)throw std::runtime_error("unclosed conditions");
+    if(query_index!=queries.size())throw std::runtime_error("query operation out of range");
+    if(argc==10 && !clean)throw std::runtime_error("clean output write");
     for(int j=1;j<=5;j++)if(ix[j]!=count[j])throw std::runtime_error("stream count");
     double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
     std::ofstream out(argv[3]);out<<"{\"operations\":"<<count[0]<<",\"qubits\":"<<nq<<",\"bits\":"<<nb<<",\"ccx\":"<<ccx<<",\"conditional_ccx\":"<<conditional<<",\"hmr_replacements\":"<<uncompute<<",\"zero_replacements\":"<<zero<<",\"linear_replacements\":"<<linear<<",\"term_cap\":"<<alg.cap<<",\"expression_overflows\":"<<alg.overflows<<" ,\"xor_cache_limit\":"<<alg.xor_cache_limit<<",\"xor_recoveries\":"<<alg.recovered<<",\"product_atoms\":"<<alg.products.size()<<",\"atoms\":"<<alg.next-1<<",\"elapsed_seconds\":"<<elapsed<<",\"ccz\":"<<ccz<<",\"cswap\":"<<cswap<<",\"phase_reductions\":"<<phase_reductions<<",\"swap_reductions\":"<<swap_reductions<<",\"classical_guards\":"<<guards<<",\"false_guard_operations\":"<<false_guards<<",\"true_guard_operations\":"<<true_guards<<",\"dead_three_qubit_gates\":"<<dead_three<<",\"borrowed_uncomputes\":"<<borrowed_uncomputes<<"}\n";
