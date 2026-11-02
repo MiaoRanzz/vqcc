@@ -60,7 +60,13 @@ class Algebra:
         return self.products[key]
 
 
-def pack_proven(text, term_limit=2048):
+def pack_proven(text, term_limit=2048, *, certified_zero_after=None):
+    """Optional zero certificates must cover this exact stream and all branches.
+
+    The exhaustive-prefix caller stops before classical control; sampled traces
+    are not valid certificates. Only operands of the named operation may appear.
+    """
+    certified_zero_after = certified_zero_after or {}
     lines = text.splitlines()
     fixed = {int(q) for line in lines if line.startswith('APPEND_TO_REGISTER ') for q in Q.findall(line)}
     if fixed != set(range(22)):
@@ -130,6 +136,10 @@ def pack_proven(text, term_limit=2048):
             pass
         else:
             raise ValueError(f'Unhandled operation {op}')
+        for q in certified_zero_after.get(index, ()):
+            if q not in qs:
+                raise ValueError('Zero certificate must name an operation operand')
+            state[q] = ZERO
         for q in sorted(set(qs) - fixed):
             if state[q] == ZERO:
                 k = active.pop(q)
