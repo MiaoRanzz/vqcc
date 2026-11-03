@@ -216,7 +216,7 @@ export default function Config() {
                 <Field
                   key={key}
                   label={label}
-                  hint="项目专用配置，不修改全局 Codex 设置。"
+                  hint="项目专用配置，不修改全局 Codex 或 Claude Code 设置；Claude Code 忽略服务档位。"
                 >
                   <input
                     required

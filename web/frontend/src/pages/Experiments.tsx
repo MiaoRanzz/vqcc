@@ -398,7 +398,7 @@ export default function Experiments({ params }: { params: URLSearchParams }) {
             </button>
           </div>
           <p className="muted">
-            本地验证与晋级不调用 Codex；晋级仍由流水线判断完整证据和成本改进。
+            本地验证与晋级不调用模型；晋级仍由流水线判断完整证据和成本改进。
           </p>
           <div className="grid two">
             <div>

@@ -25,6 +25,9 @@
   "submit_timeout_seconds": 1800,
   "reconcile_timeout_seconds": 1200,
   "codex_executable": "/usr/local/bin/codex",
+  "agent_backend": "codex",
+  "claude_executable": "claude",
+  "claude_permission_mode": "bypassPermissions",
   "baseline_path": "submission/2026-10-29",
   "baseline_submission_id": 57763974
 }

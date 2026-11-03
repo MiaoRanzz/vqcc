@@ -218,9 +218,36 @@ codex mcp login kaggle
 
 配置方法见[官方MCP说明](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。确认比赛和账号归属。新账号尚无提交是正常状态，改造后的 smoke 应显示尚无提交，不再查询原账号的ID。
 
+### 改用 Claude Code
+
+交互使用无需额外配置：在项目根目录启动 `claude`，`CLAUDE.md` 会导入 `AGENTS.md`，
+项目 skill 以 `/vqcc-optimize` 调用（`.claude/skills/` 链接到 `.agents/skills/`）。
+首次启动时接受工作区信任提示；未信任时 `.claude/settings.json` 里的
+`additionalDirectories` 会被忽略。
+
+让 runner 改用 Claude Code：
+
+1. 在 `automation/config.json` 设置 `"agent_backend": "claude"`，`claude_executable`
+   填写 `command -v claude` 的绝对路径。
+2. 在控制台“配置与额度”把项目模型改成 Claude Code 接受的名称（如 `opus`、`sonnet`
+   或完整模型 ID）。推理强度映射到 `--effort`（minimal→low，ultra→max），服务档位不生效。
+3. 默认 `claude_permission_mode` 为 `bypassPermissions`，等同 Codex 的
+   `--approve-for-me`。以 root 运行时 Claude Code 会拒绝该模式，除非部署方自行确认
+   运行环境是隔离沙箱并设置 `IS_SANDBOX=1`；否则改用非 root 账号运行调度器。
+   `.claude/settings.json` 的 deny 规则在该模式下仍然生效。
+4. 为 Claude Code 添加 Kaggle MCP（用户级，便于无头运行加载），再在交互会话里用 `/mcp` 登录：
+
+~~~bash
+claude mcp list
+claude mcp add --transport http --scope user kaggle https://www.kaggle.com/mcp
+~~~
+
+未登录时提交与对账按提示词走官方 SDK 回退路径。切换后先跑 `launch.sh smoke`，
+确认 `runs/<id>/events.jsonl` 出现 `system/init`、`result` 事件且生成 `report.md`。
+
 ## 8. 初始化自己的基线
 
-在发布版 `automation/config.json` 填写自己的数据路径、Conda解释器、Codex路径，以及获准使用的CPU、内存、GPU和时长。`artifacts` 与配置的数据目录要一致。
+在发布版 `automation/config.json` 填写自己的数据路径、Conda解释器、Codex 或 Claude Code 路径（见 `agent_backend`），以及获准使用的CPU、内存、GPU和时长。`artifacts` 与配置的数据目录要一致。
 
 原部署的上限是20 CPU、180 GiB内存和GPU 0、1，现有代码也会拒绝更大的值。这不是对队友机器的授权；机器较小就调低预算，扩展上限另行明确。沿用北京时间20:00、每天最多一次，是本工作流的选择。截止时间在接入当天核对比赛页面。
 

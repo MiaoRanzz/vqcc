@@ -8,7 +8,8 @@
 
 ```text
 vqcc/
-├── .agents/             Codex 项目工作流和参考规则
+├── .agents/             项目工作流和参考规则（Codex 与 Claude Code 共用）
+├── .claude/             Claude Code 项目设置；skills/ 链接到 .agents/skills/
 ├── automation/          调度、队列、科学流水线和提交控制
 ├── generators/          三题的生成器、变换、筛选和分析代码
 ├── verifiers/           比赛提供的官方验证器
@@ -27,6 +28,7 @@ vqcc/
 | 路径 | 负责什么 | 修改边界 |
 |---|---|---|
 | `.agents/` | `vqcc-optimize` 工作流及任务、提交、Top-3 等参考规则 | 只在项目流程或约束变化时修改；不能替代 `AGENTS.md` 的授权边界 |
+| `.claude/` | Claude Code 权限设置（只读比赛输入、凭据读取禁止）和 skill 链接 | skill 内容只改 `.agents/`；个人设置放 `settings.local.json`，不进 Git |
 | `automation/` | 调度器、作业队列、资源监督、候选流水线、Top-3 账本和提交策略 | 工程控制代码；入口和文件分工见 [automation/README.md](automation/README.md) |
 | `generators/` | DQI、InvSqrt、DFTHC-SOS 的可复现生成和分析实现 | 不保存生成产物；分组和命名见 [generators/README.md](generators/README.md) |
 | `verifiers/` | 官方完整验证和相关官方数据 | 视为只读比赛输入；修改会使既有验证证据失效 |
@@ -44,6 +46,7 @@ vqcc/
 | 文件 | 作用 |
 |---|---|
 | `AGENTS.md` | 当前项目的授权、资源、科学验证和提交硬约束 |
+| `CLAUDE.md` | Claude Code 入口；导入 `AGENTS.md`，只补充 Claude Code 的用法映射 |
 | `README.md` | 部署入口、常用命令和端到端运行说明 |
 | `PROJECT_STRUCTURE.md` | 文件夹职责、状态所有权和文件放置规则 |
 | `CHANGELOG.md` | 面向使用者的重要工程变更摘要 |

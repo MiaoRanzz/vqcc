@@ -1,5 +1,17 @@
 # 版本更迭
 
+## Claude Code 适配 — 2026-11-03
+
+- 新增 `CLAUDE.md`（导入 `AGENTS.md`）、`.claude/settings.json` 和指向
+  `.agents/skills/vqcc-optimize` 的 skill 链接；交互会话可用 `/vqcc-optimize`。
+- 项目设置禁止编辑 `verifiers/`、`sample_submission/`、`kickmix/`、
+  `submission/2026-10-29/`，禁止读取 `.env`、Kaggle 凭据和代理配置。
+- runner 新增 `agent_backend`：`claude` 时以 `claude -p --output-format stream-json`
+  无头运行，从 `result` 事件写 `report.md`；事件摘要仍不保存工具参数和结果。
+  默认仍为 `codex`，行为不变。
+- 控制台 token 统计同时汇总 Codex `turn.completed` 和 Claude Code `result`；
+  启动调度器和子进程时清除交互式 Codex/Claude Code 会话变量。
+
 ## 工作流更新 — 2026-10-30
 
 - 每个北京时间日期的首个可执行优化轮次，检查按分数降序发现的公开代码；

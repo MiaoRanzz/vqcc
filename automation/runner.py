@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded local Codex runs and a project-only scheduler using an IANA timezone."""
+"""Bounded local Codex/Claude Code runs and a project-only scheduler using an IANA timezone."""
 from __future__ import annotations
 
 import argparse
@@ -111,7 +111,36 @@ def event_summary(raw):
                 result[key] = item[key]
         if item.get('type') == 'agent_message':
             result['text'] = redact(item.get('text', ''))
+    # Claude Code stream-json: summarize message blocks, never tool inputs or results.
+    for key in ('subtype', 'model', 'claude_code_version', 'is_error', 'num_turns', 'duration_ms', 'total_cost_usd'):
+        if key in obj and not isinstance(obj[key], (dict, list)):
+            result[key] = obj[key]
+    message = obj.get('message')
+    if obj.get('type') in {'assistant', 'user'} and isinstance(message, dict):
+        blocks = [block for block in message.get('content', []) if isinstance(block, dict)] if isinstance(message.get('content'), list) else []
+        result['item_type'] = ','.join(block.get('type', '') for block in blocks) or None
+        tools = [block['name'] for block in blocks if block.get('type') == 'tool_use' and 'name' in block]
+        if tools:
+            result['tool'] = ','.join(tools)
+        text = '\n'.join(block.get('text', '') for block in blocks if block.get('type') == 'text')
+        if obj['type'] == 'assistant' and text:
+            result['text'] = redact(text)
+        if obj.get('parent_tool_use_id'):
+            result['parent_tool_use_id'] = obj['parent_tool_use_id']
+    if obj.get('type') == 'result' and obj.get('is_error') and isinstance(obj.get('result'), str):
+        result['error'] = redact(obj['result'])[:4000]
     return result
+
+
+def claude_report(raw):
+    """Final answer of a Claude Code stream-json run, the analogue of Codex's last message."""
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return None
+    if isinstance(obj, dict) and obj.get('type') == 'result' and isinstance(obj.get('result'), str):
+        return obj['result']
+    return None
 
 
 def proc_table():
@@ -173,14 +202,15 @@ def execute(mode, cfg, config_path, seconds, slot_id, state_path, *, job=None, c
     run_dir.mkdir(parents=True, exist_ok=job is not None)
     try:
         from .events import emit, cpu_seconds
-        from .model_config import MODEL_KINDS, model_arguments
+        from .model_config import MODEL_KINDS, agent_backend, agent_command, session_free_environment
     except ImportError:
         from events import emit, cpu_seconds
-        from model_config import MODEL_KINDS, model_arguments
+        from model_config import MODEL_KINDS, agent_backend, agent_command, session_free_environment
     local = mode not in MODEL_KINDS
+    backend = None if local else agent_backend(cfg)
     now = dt.datetime.now(dt.timezone.utc)
     context = {
-        'mode': mode, 'project_root': str(ROOT), 'config': str(config_path),
+        'mode': mode, 'agent_backend': backend, 'project_root': str(ROOT), 'config': str(config_path),
         'storage_root': str(storage), 'run_dir': str(run_dir),
         'python_executable': cfg['python_executable'], 'conda_env': cfg['conda_env'],
         'stop_by': (now + dt.timedelta(seconds=seconds - min(60, seconds // 5))).isoformat(),
@@ -212,15 +242,13 @@ def execute(mode, cfg, config_path, seconds, slot_id, state_path, *, job=None, c
     write_json(run_dir / 'context.json', context)
     prompt = '' if local else (ROOT / 'automation' / 'prompts' / (mode + '.md')).read_text()
     prompt += '\n\nRuntime context (authoritative for this invocation):\n' + json.dumps(context, ensure_ascii=False, indent=2)
-    prompt += '\nThe user approved this bounded recurring workflow, local changes and daily improved submissions. Honor AGENTS.md and the skill. Read stop_by and leave a checkpoint before the deadline. Do not change schedules, limits, security settings, or publish anything. Never start detached workers. No new paid resources.\n'
+    prompt += '\nThe user approved this bounded recurring workflow, local changes and daily improved submissions. Honor AGENTS.md (CLAUDE.md imports it) and the vqcc-optimize skill. Read stop_by and leave a checkpoint before the deadline. Do not change schedules, limits, security settings, or publish anything. Never start detached workers. No new paid resources.\n'
     if job and not job.get('allow_subagents', False):
         prompt += '\nDo not spawn subagents for this invocation.\n'
     cmd = ([cfg['python_executable'], str(ROOT / 'automation/local_job.py'), '--job', str(run_dir / 'job.json'),
             '--config', str(config_path), '--run-dir', str(run_dir)] if local else
-           [cfg['codex_executable'], 'exec', '--approve-for-me', '--ephemeral', '--add-dir', str(storage), '-C', str(ROOT),
-            '--json', '--color', 'never', '--output-last-message', str(run_dir / 'report.md')] +
-           (model_arguments(job) if job else []) + ['-'])
-    env = os.environ.copy()
+           agent_command(cfg, job, storage, run_dir))
+    env = os.environ.copy() if local else session_free_environment(os.environ)
     transport = storage / 'runtime' / 'transport-env.json'
     if transport.exists():
         allowed = {'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'NODE_USE_ENV_PROXY'}
@@ -243,20 +271,22 @@ def execute(mode, cfg, config_path, seconds, slot_id, state_path, *, job=None, c
     if ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) != 0:
         raise RuntimeError('Cannot enable Linux child subreaper for bounded process cleanup')
     def spawn():
-        return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, start_new_session=True, preexec_fn=child_setup)
+        return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, cwd=None if local else ROOT, start_new_session=True, preexec_fn=child_setup)
     proc = controller.spawn(job['job_id'], job['run_id'], spawn) if controller else spawn()
     if proc is None:
         return None
     result.update(status='running', pid=proc.pid, pid_start=proc_table().get(proc.pid, (None, None))[1])
     if job:
         emit(run_dir, 'stage.started', job_id=job['job_id'], stage='local_operation' if local else mode,
-             message='本地操作启动' if local else 'Codex 任务启动')
+             message='本地操作启动' if local else ('Claude Code' if backend == 'claude' else 'Codex') + ' 任务启动')
     write_json(state_path, result)
     def reader(stream, path, structured):
         with path.open('w') as log:
             for line in stream:
                 log.write((json.dumps(event_summary(line), ensure_ascii=False) if structured else redact(line.rstrip())[:4000]) + '\n')
                 log.flush()
+                if structured and backend == 'claude' and (text := claude_report(line)) is not None:
+                    (run_dir / 'report.md').write_text(text)
     readers = [threading.Thread(target=reader, args=(proc.stdout, run_dir / ('stdout.log' if local else 'events.jsonl'), not local), daemon=True), threading.Thread(target=reader, args=(proc.stderr, run_dir / 'stderr.log', False), daemon=True)]
     for reader_thread in readers:
         reader_thread.start()

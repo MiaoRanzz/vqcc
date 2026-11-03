@@ -130,7 +130,7 @@ export default function Workbench({ params }: { params: URLSearchParams }) {
           <Cpu size={22} />
           <div>
             <strong>本地实验</strong>
-            <span>使用本机算力，不调用 Codex</span>
+            <span>使用本机算力，不调用模型</span>
           </div>
         </button>
         <button
@@ -142,8 +142,8 @@ export default function Workbench({ params }: { params: URLSearchParams }) {
         >
           <Sparkles size={22} />
           <div>
-            <strong>Codex 优化</strong>
-            <span>消耗现有 Codex 使用额度</span>
+            <strong>智能体优化</strong>
+            <span>消耗现有 Codex 或 Claude Code 使用额度</span>
           </div>
         </button>
       </div>
@@ -393,7 +393,7 @@ export default function Workbench({ params }: { params: URLSearchParams }) {
               工作类型:
                 kind === "local_experiment"
                   ? "本地实验 · 不调用模型"
-                  : "Codex 优化 · 消耗模型额度",
+                  : "智能体优化 · 消耗模型额度",
               父候选: preview.request?.parent_candidate_id || parent || "无",
               配置版本: preview.config_revision || config.data?.active_revision,
               最长运行: duration(maxSeconds),

@@ -47,7 +47,7 @@ export default function Submissions() {
         description="本地验证、提交名额与平台评分，分别保留各自的事实。"
         actions={
           <button disabled={action.busy} onClick={() => preview("reconcile")}>
-            <RefreshCw size={15} /> 查询平台（调用 Codex）
+            <RefreshCw size={15} /> 查询平台（调用模型）
           </button>
         }
       />

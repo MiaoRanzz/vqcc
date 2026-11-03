@@ -530,8 +530,9 @@ class ReadModel:
             for event in self._jsonl_cache.get(path, {}).get("usage", []):
                 observations.append({"run_id": directory.name, "type": event.get("type"),
                                      "at": event.get("at"), "usage": event["usage"]})
-                # Codex turn.completed fields are per turn. Other event scopes remain raw observations.
-                if event.get("type") == "turn.completed":
+                # Codex turn.completed fields are per turn; a Claude Code result event totals its session.
+                # Other event scopes remain raw observations.
+                if event.get("type") in {"turn.completed", "result"}:
                     for key, value in event["usage"].items():
                         if isinstance(value, (int, float)) and not isinstance(value, bool):
                             tokens[key] = tokens.get(key, 0) + value
@@ -539,7 +540,7 @@ class ReadModel:
                       model_seconds=sum(model_seconds) if model_seconds else None,
                       local_seconds=sum(local_seconds) if local_seconds else None,
                       usage_complete=False, observed_model_runs=model_runs,
-                      coverage="次数沿用预留日期；时长按北京时间启动日归属，仅统计结束报告。token 仅汇总已返回的 turn.completed 原始字段，缓存输入不重复相加，子代理及中断运行覆盖不完整。")
+                      coverage="次数沿用预留日期；时长按北京时间启动日归属，仅统计结束报告。token 仅汇总已返回的 turn.completed（Codex）或 result（Claude Code）原始字段，缓存输入不重复相加，子代理及中断运行覆盖不完整。")
         return result
 
     def _jobs(self):

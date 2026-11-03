@@ -59,7 +59,7 @@ export const kindNames: Record<string, string> = {
   local_validate: "官方验证",
   local_promote: "晋级候选",
   prepare_preview: "组合预览",
-  optimize: "Codex 优化",
+  optimize: "智能体优化",
   smoke: "模型诊断",
   submit: "提交",
   reconcile: "平台对账",

@@ -9,6 +9,7 @@ import subprocess
 import time
 
 from runner import ROOT, load_config, proc_table, verify_environment, write_json
+from model_config import session_free_environment
 
 
 def running(runtime):
@@ -69,11 +70,8 @@ def main():
     result = {'status': 'installed', 'project_root': str(ROOT), 'storage': str(storage), 'command': command, 'timezone': cfg['timezone'], 'submission_policy': policy, 'max_daily_submissions': cfg.get('max_daily_submissions', 1), 'submission_time': submit_at, 'system_services_changed': False, 'restart_note': 'This container has no init service. After a container restart, verify the mount/auth and run install_schedule.py --install --start again.'}
     write_json(runtime / 'schedule.json', result)
     if args.start and previous is None:
-        env = os.environ.copy()
         # Request/session identifiers from an interactive tool must not outlive it.
-        for key in tuple(env):
-            if key.startswith('CODEX_') and key not in ('CODEX_HOME',):
-                del env[key]
+        env = session_free_environment(os.environ)
         with (runtime / 'scheduler.log').open('a') as log:
             child = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, env=env)
         for _ in range(30):

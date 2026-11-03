@@ -21,10 +21,10 @@ import uuid
 from zoneinfo import ZoneInfo
 
 try:
-    from .model_config import MODEL_KINDS, generator_revision, imported_model
+    from .model_config import MODEL_KINDS, generator_revision, imported_model, session_free_environment
     from .events import now_string
 except ImportError:
-    from model_config import MODEL_KINDS, generator_revision, imported_model
+    from model_config import MODEL_KINDS, generator_revision, imported_model, session_free_environment
     from events import now_string
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -601,7 +601,7 @@ class Jobs:
                     identity = json.loads(path.read_text()) if path.exists() else None
                     alive = identity and identity.get('status') == 'running' and process_identity(identity['pid']) == identity['pid_start']
                     if not alive:
-                        env = {k: v for k, v in os.environ.items() if not k.startswith('CODEX_') or k == 'CODEX_HOME'}
+                        env = session_free_environment(os.environ)
                         with (runtime / 'scheduler.log').open('a') as log:
                             subprocess.Popen([self.base['python_executable'], str(ROOT / 'automation/runner.py'),
                                               '--config', str(self.config_path), 'daemon'],

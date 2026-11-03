@@ -25,3 +25,4 @@ web/frontend/playwright-report/
 web/frontend/*.tsbuildinfo
 .seecode/
 diagrams/
+.claude/settings.local.json

@@ -22,7 +22,8 @@
 3. 运行 `./automation/launch.sh status` 查看调度器、最近运行和下一个窗口；运行
    `conda run -n vqcc /root/miniconda3/envs/vqcc/bin/python automation/pipeline.py status`
    查看三题当前最优、提交记录和未知结果。README 不复制这些实时数据。
-4. 要开始一次研究、优化或结果审查，直接要求 Codex 使用 `$vqcc-optimize` 并说明任务；
+4. 要开始一次研究、优化或结果审查，直接要求 Codex 使用 `$vqcc-optimize`（Claude Code 中为
+   `/vqcc-optimize`）并说明任务；
    项目 skill 会从当前最优和已有失败记录继续。要启停现有自动调度，使用下方
    [环境与常用命令](#环境与常用命令)。
 
@@ -34,7 +35,7 @@
 | 需要做什么 | 从哪里开始 |
 |---|---|
 | 了解长期约束和权限 | [AGENTS.md](AGENTS.md) |
-| 让 Codex 研究、优化、复现或审查 | [项目 skill](.agents/skills/vqcc-optimize/SKILL.md) |
+| 让 Codex / Claude Code 研究、优化、复现或审查 | [项目 skill](.agents/skills/vqcc-optimize/SKILL.md)；Claude Code 入口 [CLAUDE.md](CLAUDE.md) |
 | 查看文件夹职责和新文件放置规则 | [项目文件结构](PROJECT_STRUCTURE.md) |
 | 查看部署参数和时间窗口 | [automation/config.json](automation/config.json) |
 | 查看研究线索和已知方向 | [docs/research.md](docs/research.md) |
@@ -169,8 +170,8 @@ artifacts/
   runtime/               调度器身份、互斥锁、每日执行记录和私有网络配置
 ```
 
-日志不保存工具参数/返回原文；签名 URL 和凭证不进入 Git。运行使用 Codex 的
-临时会话，长期状态以版本库和上述记录为准。不要手工修改状态来绕过提交门槛。
+日志不保存工具参数/返回原文；签名 URL 和凭证不进入 Git。运行使用 Codex 或
+Claude Code（由 `automation/config.json` 的 `agent_backend` 选择）的临时会话，长期状态以版本库和上述记录为准。不要手工修改状态来绕过提交门槛。
 低于 20 GiB 可用空间时停止生成/运行，不自动删除历史最佳或正式提交。
 
 ## 迁移到另一台现有服务器
