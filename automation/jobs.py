@@ -470,6 +470,30 @@ class Jobs:
                 body.update(trigger_job_id=trigger_job_id, trigger_run_id=trigger_run_id)
             return self._operation(state, key, 'enqueue', body, create)
 
+    def enqueue_validation(self, candidate_id, robustness=False, max_seconds=None, trigger_run_id=None):
+        """Hand a long official check to the serial runner so it needs no model session.
+
+        It runs between model jobs (ahead of automatic relay slots), within the same
+        protected-window, deadline and resource rules as every other job.
+        """
+        snapshot = self.snapshot()
+        pending = [job for job in snapshot['jobs'].values()
+                   if job['kind'] == 'local_validate' and job.get('origin') == 'agent' and job['state'] in QUEUED | ACTIVE]
+        same = next((job for job in pending if job.get('candidate_id') == candidate_id
+                     and bool(job.get('robustness')) == bool(robustness)), None)
+        if same:
+            return {**same, 'status': 'already_queued'}
+        limit = int(self.base.get('agent_validation_queue_limit', 3))
+        if len(pending) >= limit:
+            raise ControlError('QUEUE_LIMIT', f'已有 {len(pending)} 个代理排队的验证（上限 {limit}）；请在 hypotheses 队列中保留其余待验证项', 409)
+        cfg = self._active_config(snapshot)
+        seconds = min(int(max_seconds or self.base.get('validation_job_seconds', 7200)), cfg['max_agent_seconds'])
+        request = {'kind': 'local_validate', 'candidate_id': candidate_id, 'max_seconds': seconds}
+        if robustness:
+            request['robustness'] = True
+        key = 'agent-validate:' + uuid.uuid4().hex
+        return self.enqueue(request, key, origin='agent', trigger_run_id=trigger_run_id)
+
     def _job(self, state, job_id, revision=None):
         if job_id not in state['jobs']:
             raise ControlError('NOT_FOUND', '作业不存在', 404)
@@ -508,7 +532,7 @@ class Jobs:
                                'submission_policy': self.base.get('submission_policy', 'daily_window'),
                                'max_daily_submissions': self.base.get('max_daily_submissions', 5 if self.base.get('submission_policy') == 'after_optimization' else 1),
                                'submission_quota_basis': self.base.get('submission_quota_basis', 'attempts'),
-                               'submission_quota_timezone': self.base.get('submission_quota_timezone', self.base['timezone'])},
+                               'submission_quota_timezone': self.base.get('submission_quota_timezone', 'UTC')},
                 'apply_status': 'applied' if state['active_revision'] == state['configs'][-1]['revision'] else 'pending_activation', 'next_saved_revision': state['configs'][-1]['revision']}
 
     def config_preview(self, values):

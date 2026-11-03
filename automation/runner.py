@@ -236,11 +236,10 @@ def execute(mode, cfg, config_path, seconds, slot_id, state_path, *, job=None, c
         'submission_policy': cfg.get('submission_policy', 'daily_window'),
         'max_daily_submissions': cfg.get('max_daily_submissions', 5 if cfg.get('submission_policy') == 'after_optimization' else 1),
         'submission_quota_basis': cfg.get('submission_quota_basis', 'attempts'),
-        'submission_quota_timezone': cfg.get('submission_quota_timezone', cfg['timezone']),
+        'submission_quota_timezone': cfg.get('submission_quota_timezone', 'UTC'),
         'daily_submission_times': cfg.get('daily_submission_times', [cfg['daily_submission_time']]),
         'submission_timezone': cfg.get('submission_timezone', cfg['timezone']),
         'official_max_daily_submissions': cfg.get('official_max_daily_submissions', 5),
-        'one_submission_per_shanghai_date': cfg.get('submission_policy', 'daily_window') == 'daily_window',
     }
     if job:
         context.update(job_id=job['job_id'], run_id=job['run_id'], config_revision=job['config_revision'],
@@ -249,6 +248,14 @@ def execute(mode, cfg, config_path, seconds, slot_id, state_path, *, job=None, c
                        task=job.get('task'), hypothesis=job.get('hypothesis'), research_id=job.get('research_id'),
                        allow_subagents=job.get('allow_subagents', False))
     if mode == 'optimize':
+        tool = lambda script, *extra: ['conda', 'run', '--no-capture-output', '-n', cfg['conda_env'], cfg['python_executable'],
+                                       str(ROOT / 'automation' / script), '--config', str(config_path), *extra]
+        context.update(search_brief_command=tool('search.py', 'brief'),
+                       search_report_command=tool('search.py', 'report'),
+                       queue_validate_command=tool('runner.py', 'queue-validate', '--candidate', '<CANDIDATE_ID>',
+                                                   '--run-id', job['run_id'] if job else run_dir.name),
+                       validation_job_seconds=cfg.get('validation_job_seconds', 7200),
+                       agent_validation_queue_limit=cfg.get('agent_validation_queue_limit', 3))
         context.update(optimization_strategy='top3_independent_then_combined',
                        optimization_parents_per_task=3,
                        search_progress=str(storage / 'research/top3.json'),
@@ -430,8 +437,11 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=Path(os.environ.get('VQCC_CONFIG', ROOT / 'automation/config.json')))
-    parser.add_argument('mode', choices=['daemon', 'tick', 'status', 'dry-run', 'smoke', 'optimize', 'submit', 'reconcile'])
+    parser.add_argument('mode', choices=['daemon', 'tick', 'status', 'dry-run', 'smoke', 'optimize', 'submit', 'reconcile', 'queue-validate'])
     parser.add_argument('--seconds', type=int)
+    parser.add_argument('--candidate', help='queue-validate: candidate whose full official check the runner should run')
+    parser.add_argument('--robustness', action='store_true', help='queue-validate: separate DQI fresh-seed replication')
+    parser.add_argument('--run-id', help='queue-validate: the requesting run, recorded as the trigger')
     args = parser.parse_args()
     cfg = load_config(args.config)
     verify_environment(cfg)
@@ -462,6 +472,12 @@ def main():
         except ImportError:
             from jobs import Jobs
         jobs = Jobs(args.config, initialize=not (storage / 'console/state.json').exists())
+        if args.mode == 'queue-validate':
+            # Enqueue only: the existing daemon dispatches it between model jobs.
+            if not args.candidate:
+                raise ValueError('queue-validate needs --candidate')
+            print(json.dumps(jobs.enqueue_validation(args.candidate, args.robustness, args.seconds, args.run_id), ensure_ascii=False))
+            return 0
         if args.mode != 'tick':
             seconds = args.seconds or (300 if args.mode == 'smoke' else cfg['submit_timeout_seconds'] if args.mode == 'submit' else cfg['reconcile_timeout_seconds'] if args.mode == 'reconcile' else cfg['max_agent_seconds'])
             queued = jobs.enqueue({'kind': args.mode, 'max_seconds': seconds}, 'cli:' + uuid.uuid4().hex)
@@ -477,6 +493,8 @@ def main():
             if result:
                 print(json.dumps(result, ensure_ascii=False))
             return 0
+    if args.mode == 'queue-validate':
+        raise RuntimeError('queue-validate needs the job console queue (daily_windows or after_optimization policy)')
     if args.mode == 'tick' and ((runtime / 'PAUSED').exists() or slot is None):
         return 0
     if args.mode != 'smoke' and now >= dt.datetime.fromisoformat(cfg['deadline']):

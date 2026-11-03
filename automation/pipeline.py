@@ -456,7 +456,38 @@ class Pipeline:
                     stack.append(parent)
         return False
 
-    def create(self, task, hypothesis, source, license_info, parent=None, parents=None):
+    RECIPE_FILES = ("generation.json", "parameters.json", "console-job.json")
+    RECIPE_KEYS = ("generator", "script", "command", "argv", "args", "params", "parameters", "source_npz",
+                   "upstream", "parent_output", "source_bank", "fit_from", "inputs", "recipe")
+
+    def _copy_recipe(self, parent_id, destination):
+        """Copy a parent's recorded recipe into the new candidate; ancestry alone selects nothing."""
+        source_dir, _ = self.candidate(parent_id)
+        target = destination / "code" / "parent_recipes" / parent_id
+        files, summary = [], {}
+        candidates = [source_dir / name for name in self.RECIPE_FILES]
+        candidates += sorted(p for p in (source_dir / "code").rglob("*") if p.is_file() and "parent_recipes" not in p.parts) \
+            if (source_dir / "code").is_dir() else []
+        for path in candidates:
+            if not path.is_file() or path.is_symlink() or "__pycache__" in path.parts or path.stat().st_size > 16 * 1024 ** 2:
+                continue
+            relative = path.relative_to(source_dir)
+            copied = target / relative
+            copied.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, copied)
+            files.append({"path": relative.as_posix(), "sha256": sha256(copied)})
+            if relative.as_posix() == "generation.json":
+                try:
+                    document = read_json(copied)
+                except ValueError:
+                    document = {}
+                if isinstance(document, dict):
+                    summary = {key: document[key] for key in self.RECIPE_KEYS if key in document}
+        return {"id": parent_id, "directory": str(target), "files": files,
+                "has_generation": any(item["path"] == "generation.json" for item in files),
+                "summary": summary}
+
+    def create(self, task, hypothesis, source, license_info, parent=None, parents=None, recipe_from=None):
         self.active()
         with self.locked():
             self.disk_check()
@@ -475,8 +506,19 @@ class Pipeline:
             (path / "code").mkdir()
             data = {"id": cid, "task": task, "created_at": self.now_string(), "parent": parent or self.state["best"].get(task), "hypothesis": hypothesis, "source": source, "license": license_info}
             data["parents"] = parents if parents is not None else ([data["parent"]] if data["parent"] else [])
+            recipes = []
+            for rid in dict.fromkeys(recipe_from or []):
+                if rid not in data["parents"]:
+                    raise PipelineError("--recipe-from must name a recorded parent of this candidate")
+                recipes.append(self._copy_recipe(rid, path))
+            if recipes:
+                data["recipe_from"] = [{key: item[key] for key in ("id", "files", "has_generation")} for item in recipes]
             write_json(path / "candidate.json", data)
-            return {**data, "directory": str(path), "output": str(path / "output"), "code": str(path / "code")}
+            result = {**data, "directory": str(path), "output": str(path / "output"), "code": str(path / "code")}
+            if recipes:
+                result["recipes"] = recipes
+                result["recipe_note"] = "Copied for reference; pass the generator, inputs and parameters explicitly"
+            return result
 
     def runtime(self):
         env_name = os.environ.get("VQCC_CONDA_ENV", self.config.get("conda_env", "vqcc"))
@@ -932,6 +974,8 @@ def main(argv=None):
     create.add_argument("--license", required=True, dest="license_info")
     create.add_argument("--parent")
     create.add_argument("--parents", nargs="+", help="All contributing same-task parents for combined optimization")
+    create.add_argument("--recipe-from", nargs="+", metavar="PARENT_ID",
+                        help="Copy these parents' generation.json/parameters/code into code/parent_recipes/ and print the recipe summary")
     top = sub.add_parser("top", help="Rank up to three distinct candidates with current official evidence")
     top.add_argument("task", choices=TASKS)
     validate = sub.add_parser("validate", help="Run unchanged official full validation")
@@ -958,7 +1002,8 @@ def main(argv=None):
     if args.command == "init":
         result = pipeline.init(args.baseline)
     elif args.command == "create":
-        result = pipeline.create(args.task, args.hypothesis, args.source, args.license_info, args.parent, args.parents)
+        result = pipeline.create(args.task, args.hypothesis, args.source, args.license_info, args.parent, args.parents,
+                                 args.recipe_from)
     elif args.command == "top":
         with pipeline.locked():
             result = pipeline.top_candidates(args.task)

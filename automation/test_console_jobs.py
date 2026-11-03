@@ -265,6 +265,20 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(self.jobs.usage()['reserved'], 0)
 
 
+    def test_agent_validation_queue_dedupes_and_is_bounded(self):
+        for cid in ('a', 'b', 'c', 'd'):
+            atomic_json(self.storage / 'experiments' / cid / 'candidate.json', {'id': cid, 'task': 'invsqrt'})
+        first = self.jobs.enqueue_validation('a', trigger_run_id='run-1')
+        self.assertEqual(first['kind'], 'local_validate')
+        self.assertEqual(first['origin'], 'agent')
+        self.assertEqual(self.jobs.enqueue_validation('a')['status'], 'already_queued')
+        self.jobs.enqueue_validation('b')
+        self.jobs.enqueue_validation('c')
+        with self.assertRaises(ControlError) as caught:
+            self.jobs.enqueue_validation('d')
+        self.assertEqual(caught.exception.code, 'QUEUE_LIMIT')
+
+
 class SupervisorIntegrationTests(unittest.TestCase):
     """Run supervisors in separate processes to isolate Linux subreaper ownership."""
     setUp = QueueTests.setUp

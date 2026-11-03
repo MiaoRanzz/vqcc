@@ -252,5 +252,77 @@ class SearchTests(unittest.TestCase):
             search.frontier('dqi', 1, 'x', None)
 
 
+    def test_allocation_shares_follow_headroom_with_a_floor(self):
+        search, _ = self.seed()
+        allocation = search.frontier('invsqrt', 35, 'notebook/v3', 'claimed')['allocation']
+        self.assertAlmostEqual(sum(row['share'] for row in allocation), 1, places=2)
+        self.assertEqual(allocation[0]['task'], 'invsqrt')
+        self.assertGreater(allocation[0]['share'], allocation[1]['share'])
+        self.assertTrue(all(row['share'] >= 0.15 for row in allocation))
+
+    def test_auto_no_change_only_when_at_most_one_branch_improved(self):
+        search, ids = self.seed()
+        cycle_id = search.plan('invsqrt')['tasks']['invsqrt']['cycle_id']
+        with self.assertRaisesRegex(PipelineError, 'not pending'):
+            search.record('invsqrt', cycle_id, 'combined', auto_no_change=True)
+        first = self.child([ids[0]], 60)
+        search.record('invsqrt', cycle_id, 'top1', [first])
+        search.record('invsqrt', cycle_id, 'top2', [self.child([ids[1]], 95)])
+        cycle = search.record('invsqrt', cycle_id, 'top3', evidence=self.proof(
+            search.plan('invsqrt')['tasks']['invsqrt'], 'top3'))
+        self.assertEqual(cycle['steps'][-1]['parents'], [first, ids[1], ids[2]])
+        cycle = search.record('invsqrt', cycle_id, 'combined', auto_no_change=True)
+        self.assertEqual(cycle['status'], 'completed')
+        proof = read_json(cycle['steps'][-1]['evidence']['path'])
+        self.assertEqual(proof['conclusion'], 'no_change')
+        self.assertIn(first, proof['reason'])
+
+    def test_auto_no_change_refuses_two_improved_branches(self):
+        search, ids = self.seed()
+        cycle_id = search.plan('invsqrt')['tasks']['invsqrt']['cycle_id']
+        search.record('invsqrt', cycle_id, 'top1', [self.child([ids[0]], 60)])
+        search.record('invsqrt', cycle_id, 'top2', [self.child([ids[1]], 61)])
+        search.record('invsqrt', cycle_id, 'top3', [self.child([ids[2]], 95)])
+        with self.assertRaisesRegex(PipelineError, 'real combined candidate'):
+            search.record('invsqrt', cycle_id, 'combined', auto_no_change=True)
+
+    def test_two_day_review_periods_are_anchored_and_complete(self):
+        from datetime import date
+        search, _ = self.seed()
+        self.assertEqual(search.review_period(date(2026, 11, 3))['interval'], ['2026-11-01', '2026-11-03'])
+        self.assertEqual(search.review_period(date(2026, 11, 4))['period'], '2026-11-01')
+        self.assertEqual(search.review_period(date(2026, 11, 5))['period'], '2026-11-03')
+
+    def test_handoff_rank_brief_and_report(self):
+        search, ids = self.seed()
+        search.plan('invsqrt')
+        search.handoff('invsqrt', 'validate X', step='top1', candidates=['c1', 'c1'], commands=['cmd'], run_id='r1')
+        document = search.handoff('invsqrt', 'record X', step='top1')
+        self.assertEqual(document['tasks']['invsqrt']['next_action'], 'record X')
+        self.assertEqual(document['tasks']['invsqrt']['history'][0]['candidates'], ['c1'])
+        with self.assertRaisesRegex(PipelineError, '--next'):
+            search.handoff('invsqrt')
+        write_json(search.hypotheses_path, {'queue': [
+            {'id': 'low', 'task': 'dqi', 'expected_log_combined_gain_prior': 0.01, 'p_success': 0.5, 'effort_hours': 1},
+            {'id': 'high', 'task': 'dqi', 'expected_log_combined_gain_prior': 0.05, 'p_success': 0.5, 'effort_hours': 1},
+            {'id': 'resume', 'task': 'invsqrt', 'status': 'pending_validation', 'candidate_ids': ['c1']},
+            {'id': 'vague', 'task': 'dfthcsos'},
+            {'id': 'done', 'status': 'completed', 'candidate_ids': ['c0']}]})
+        ranked = search.rank()
+        self.assertEqual([item['id'] for item in ranked['items']], ['resume', 'high', 'low', 'vague'])
+        self.assertIn('p_success', ranked['items'][-1]['missing'])
+        brief = search.brief()
+        self.assertEqual(brief['cycles']['invsqrt']['roots'][0]['id'], ids[0])
+        self.assertTrue(brief['due']['daily_public_scan']['due'])
+        review = brief['due']['review']
+        self.assertTrue(review['due'])
+        write_json(self.pipeline.storage / 'research/reviews/index.json', {'last_completed_period': review['period']})
+        self.assertFalse(search.brief()['due']['review']['due'])
+        self.assertEqual(brief['handoff']['invsqrt']['next_action'], 'record X')
+        report = search.report()
+        self.assertIn('Top-3', report)
+        self.assertIn('record X', report)
+
+
 if __name__ == '__main__':
     unittest.main()

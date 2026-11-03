@@ -213,7 +213,9 @@ function JobList({ params }: { params: URLSearchParams }) {
                     <small>
                       {["automatic", "auto"].includes(job.origin)
                         ? "自动"
-                        : "手动"}{" "}
+                        : job.origin === "agent"
+                          ? "代理排队"
+                          : "手动"}{" "}
                       · {job.job_id}
                     </small>
                   </td>
@@ -367,7 +369,9 @@ function JobDetail({ id, back }: { id: string; back: string }) {
                 题目: taskNames[job.task] || "自动分配",
                 来源: ["automatic", "auto"].includes(job.origin)
                   ? "自动调度"
-                  : "手动创建",
+                  : job.origin === "agent"
+                    ? "优化运行排队的验证"
+                    : "手动创建",
                 创建时间: date(job.created_at),
                 启动时间: job.started_at
                   ? date(job.started_at)

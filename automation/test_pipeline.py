@@ -562,5 +562,19 @@ except BaseException as error:
                 self.pipeline.runtime()
 
 
+    def test_recipe_from_copies_parent_recipe_without_running_it(self):
+        parent = self.fixture("invsqrt", 70)
+        path, _ = self.pipeline.candidate(parent)
+        write_json(path / "generation.json", {"generator": "generators/invsqrt_piecewise.py", "params": {"q": 3}, "noise": 1})
+        (path / "code" / "gen.py").write_text("print(1)\n")
+        item = self.pipeline.create("invsqrt", "h", "s", "l", parent=parent, recipe_from=[parent])
+        self.assertEqual(item["recipes"][0]["summary"], {"generator": "generators/invsqrt_piecewise.py", "params": {"q": 3}})
+        copied = Path(item["code"]) / "parent_recipes" / parent
+        self.assertTrue((copied / "generation.json").is_file() and (copied / "code/gen.py").is_file())
+        self.assertTrue(read_json(Path(item["directory"]) / "candidate.json")["recipe_from"][0]["has_generation"])
+        with self.assertRaisesRegex(PipelineError, "recorded parent"):
+            self.pipeline.create("invsqrt", "h", "s", "l", parent=parent, recipe_from=[self.fixture("invsqrt", 80)])
+
+
 if __name__ == "__main__":
     unittest.main()
