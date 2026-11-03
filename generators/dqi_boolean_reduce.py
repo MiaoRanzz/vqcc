@@ -79,6 +79,11 @@ def rewrite(source,destination,proofs,allow_classical_guards=False):
         elif kind=='cswap_cx':r.update(types=[0x21,0x21],a2=[a,a],t2=[b,t])
         elif p['kind'] in ('cx_a','cx_b'):
             r.update(types=[0x21],a2=[a if p['kind']=='cx_a' else b],t2=[t])
+        elif kind=='cached_cx':
+            cached=p['cache']
+            if not 0<=cached<data['nq'] or cached in (a,b,t):
+                raise ValueError('Invalid independent cached-product wire')
+            r.update(types=[0x21],a2=[cached],t2=[t])
         elif p['kind']=='hmr':
             r.update(types=[0x50,0xa0],q=[t],bit=[newbits],a2=[a],t2=[b],condition=[newbits]);newbits+=1
         else:raise ValueError('Unknown proof kind')
