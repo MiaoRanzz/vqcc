@@ -3,15 +3,15 @@
 Public methods produced most measured gains so far (W44: 6.05x of 10.9x). Check
 them in two depths:
 
-- **Every optimization run, first:** a quick incremental check. From the saved
+- **Every optimization run (≤5 min):** a quick incremental check. From the saved
   cursor, list Code-page entries new or re-versioned since the last check
   (score-descending, first pages). Record the cursor and any newly observed public
   per-task cost with `search.py frontier TASK --cost C --source REF --basis
   claimed|local_official` (`local_official` after our own full verification).
   Queue promising sources for reproduction ahead of local micro-tuning.
-- **First run each Asia/Shanghai day:** the full comparison below. Resume an
-  unfinished scan within the existing run budget. The aim is a better starting
-  point or a useful next experiment.
+- **When `brief.due.daily_public_scan` (≤15% of the run):** the full comparison
+  below. Past the cap, save the cursor and remaining scope and continue next run.
+  The aim is a better starting point or a useful next experiment.
 
 ## Find promising methods
 
@@ -42,21 +42,15 @@ code; exclude its upload, credential and verifier-changing steps.
 2. Estimate the possible relative cost reduction and the cheapest useful screen.
    Prioritize sources that can change our next experiment or beat an incumbent.
    Reuse matching evidence for unchanged source, inputs and artifacts.
-3. Register a distinct candidate. Record the current comparison incumbent and
-   the actual upstream recipe, inputs, parameters and adaptation. A candidate's
-   `parent` field does not automatically select its generator or inherit inputs.
-4. Screen for concrete correctness/resource violations, then build and run
-   pipeline full official verification for every feasible adaptation, including
-   each feasible variant. Expected cost or uncertain gain only orders the work;
-   it does not exempt a feasible candidate. Carry unfinished generation and
-   verification into the existing hypothesis queue for the next run. Apply the
-   existing task-specific robustness checks where required. Changed artifacts
-   need their own evidence; changed source or environment requires reassessment.
-5. Recompare with the incumbent at promotion. Adopt eligible per-task gains
-   through the pipeline, keeping stronger local components from other sources.
-   Include newly eligible recipes in the next Top-3 ranking. Keep the active
-   cycle's remaining independent branches and subsequent combined step; a new
-   winner must not discard them. Retain useful alternatives and scoped negatives.
+3. Register a distinct candidate recording the comparison incumbent and the
+   actual upstream recipe, inputs, parameters and adaptation.
+4. Screen for concrete violations, then build and validate each feasible
+   adaptation and variant under the `AGENTS.md` gates (long checks via
+   `queue-validate`). Carry unfinished work in the hypothesis queue.
+5. Adopt eligible per-task gains through `promote`, keeping stronger local
+   components from other sources. New eligible recipes enter the next Top-3
+   ranking without discarding the active cycle's remaining steps. Retain useful
+   alternatives and scoped negatives.
 
 State what was reproduced: verified imported artifacts, a rerunnable generator,
 or both. Missing upstream generation source can remain a recovery task while

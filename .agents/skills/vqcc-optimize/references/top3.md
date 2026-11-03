@@ -1,110 +1,88 @@
 # Per-task Top-3 optimization
 
-Use the configured Conda interpreter, shared runner, resource limits and deadline.
-This changes search ancestry, not the submission schedule or model-task budget.
+The cycle rules (three independent branches, then a combined step, each result
+separately and fully validated) are in `AGENTS.md`. This file covers the ledger
+mechanics. It changes search ancestry, not the submission schedule or budget.
 
 ## Select and pin a round
 
-Run the runner's `search_plan_command`. Outside a run, the equivalent is:
+Run the runner's `search_plan_command` (outside a run: `automation/search.py
+--config automation/config.json plan`). It ranks each task's distinct artifact
+families by official cost, rechecks the selected candidates' evidence integrity
+(no scientific rerun) and writes `research/top3.json`.
+
+- Identical artifact copies occupy one slot and use the earliest valid
+  attestation, never a favorable-seed report. Officially checked nonwinning
+  candidates can be roots.
+- With `top3_min_relative_gap`, a candidate within that gap of a selected root
+  that is its ancestor, descendant or sibling is excluded as `near_duplicate_of`;
+  unrelated near-ties (e.g. imported public artifacts) stay.
+- Fewer than three distinct roots is a reported `shortfall`; never pad.
+- `plan` resumes active cycles. Exception: a verified leader beating every root
+  by `top3_preempt_fraction` archives the cycle as `preempted` and starts a new
+  one (`replaces` names it). Move the old cycle's unfinished feasible work into
+  the hypothesis queue; `record` against the old cycle ID is refused.
+- A general run finishes the round across all three tasks before refreshing
+  completed cycles; `plan --task T` scopes a single task. Completed cycles are
+  archived in `research/top3-history/`. `pipeline.py top T` inspects without
+  advancing.
+
+`plan` and `brief` also return `allocation` (headroom and `share`); see SKILL.md.
+
+## Independent branches top1, top2, top3
+
+Work from each pending step's own `parents` and that parent's actual recipe
+(`pipeline.py create ... --parent P --recipe-from P`), not from `state.best`.
+Branches may run sequentially and span several runs. Give every pinned branch a
+turn before repeating one; a branch whose latest result was a verified gain may
+continue one more run before it is recorded.
+
+Each feasible output: `create` → build complete artifacts → `validate` (in-run)
+or `queue-validate` (long check). Record all results of the step, including
+official FAIL outcomes:
 
 ```text
-automation/search.py --config automation/config.json plan
+automation/search.py record TASK top1 --cycle CYCLE_ID --candidate CHILD_ID [--candidate ...]
 ```
 
-The command ranks each task's distinct artifact families by ascending official
-cost, checks the selected candidates' artifact/source/report/environment/verifier
-evidence and writes `research/top3.json`. This rechecks evidence integrity; it
-does not rerun scientific verification. Identical artifact copies occupy one
-slot and use the earliest valid attestation, never a favorable-seed report.
-Officially checked nonwinning candidates can be search parents. DQI promotion
-still requires the existing independent robustness evidence where applicable.
+A queued/unfinished check, an estimate or a DQI robustness run alone cannot
+complete a step. `promote` eligible improvements; promotion does not replace the
+cycle's remaining roots.
 
-With `top3_min_relative_gap` set, a candidate whose cost is within that relative
-gap of an already selected root and is its ancestor, descendant or sibling (shares
-a direct parent) is excluded as `near_duplicate_of` that root; the next distinct
-family takes the slot. Unrelated near-ties, such as imported public artifacts, stay.
+## Combined step
 
-Each task freezes up to three roots for a cycle. If fewer than three qualify,
-report the shortfall and use the available distinct roots. Do not pad with copies
-or unverified estimates. `plan` resumes an active cycle without replacing its
-roots, with one exception: when the task's verified leader beats every pinned root
-by at least `top3_preempt_fraction`, `plan` archives the cycle as `preempted` and
-starts a new one led by that candidate (`replaces` names the old cycle). Save the
-preempted cycle's unfinished feasible work in the hypothesis queue; a `record`
-against the old cycle ID is refused. General runs finish the current round across all three tasks before
-refreshing completed cycles; a task-scoped invocation may use `plan --task TASK`.
-Completed cycles are archived in `research/top3-history/` before replacement.
-For an inspection without advancing a cycle, use `pipeline.py top TASK`.
+It unlocks once every independent step is complete. Its `parents` are the
+lowest-cost valid result per branch (the original root when its children failed
+or got worse).
 
-`plan` also returns `allocation`: tasks ordered by `log(our_best / public_best) / 3`,
-the combined log-score headroom to the best known public cost recorded with
-`search.py frontier`. Spend the run's time on the largest headroom first; tasks
-with an unknown frontier need a public scan; `leading` tasks get local work.
-
-## Independently optimize top1, top2, top3
-
-Use each pending step's own `parents` and actual recipe, inputs and parameters.
-Rank research hypotheses within these branches; do not route all work back to
-`state.best`. Each branch should test a concrete optimization. Branches may run
-sequentially and span multiple scheduled runs. Resume unfinished feasible work
-first and give every pinned branch a turn before repeating a completed branch.
-
-Create a new candidate with `pipeline.py create TASK ... --parent PARENT_ID`.
-Generate its complete artifacts and run `pipeline.py validate CANDIDATE_ID`.
-Every feasible result in the branch must have its own full official result;
-retain failures and no-gain results alongside successes. Only matching completed
-evidence for that exact artifact can be reused. Record all results of the step:
+- **At most one branch improved its root:** there is nothing to merge (the
+  combination is the roots themselves or one already verified result). Close it:
+  `search.py record TASK combined --cycle CYCLE_ID --auto-no-change`. The command
+  refuses when two or more branches improved.
+- **Two or more improved:** read all recipes, check parameter, precision,
+  ancilla, phase and input compatibility, and build one coherent same-task
+  candidate. Keep chemistry's NPZ and complete ANGLE family consistent. Never
+  concatenate whole circuits or mix tasks.
 
 ```text
-automation/search.py record TASK top1 --cycle CYCLE_ID --candidate CHILD_ID
-```
-
-Repeat `--candidate` for additional results, including official FAIL outcomes.
-An unfinished verification, an analysis estimate or a DQI robustness run alone
-cannot complete a step. Use `pipeline.py promote` for eligible improvements;
-promotion does not replace the remaining roots of this cycle.
-
-## Combine the three branches, then verify again
-
-The `combined` step unlocks only after every available independent step is
-complete. Its `parents` select the lowest-cost valid result from each branch,
-retaining the original root when its children fail or get worse. Read all three
-recipes, compare their effective changes and construct a coherent same-task
-combination. Check parameter, precision, ancilla, phase and input compatibility.
-Keep chemistry's NPZ and complete ANGLE family consistent. Do not concatenate
-whole circuits or treat the three different competition tasks as interchangeable.
-
-Use all assigned contributing parents when registering each combined result:
-
-```text
-automation/pipeline.py create TASK --hypothesis TEXT --source TEXT --license TEXT --parents P1 P2 P3
-automation/pipeline.py validate COMBINED_ID
+automation/pipeline.py create TASK --hypothesis TEXT --source TEXT --license TEXT --parents P1 P2 P3 --recipe-from P1 P2 P3
+automation/pipeline.py validate COMBINED_ID      # or runner.py queue-validate --candidate COMBINED_ID
 automation/search.py record TASK combined --cycle CYCLE_ID --candidate COMBINED_ID
 ```
 
-Build an integrated candidate from all three branches' compatible contributions.
-Intermediate pairwise experiments are allowed and also need separate official
-verification, but do not complete the combined step by themselves. Retain their
-actual parent lists; register the final integration with all three assigned
-sources. If fewer than three roots exist, use the actual assigned list.
-
-The three branch reports never validate the combined artifact. The combined
-candidate needs its own full official PASS/FAIL bound to its exact artifact and
-source, even if all parents passed. Only separately verified improvements may
-be promoted. A combined failure still records a useful completed experiment;
-it does not displace the promoted incumbent.
+Pairwise intermediates are allowed, need their own validation, and do not
+complete the step; register the final integration with all assigned parents.
+A combined FAIL is a completed experiment and does not displace the incumbent.
 
 ## Completion, infeasibility and continuation
 
-`record` checks current evidence, exact ancestry and phase order before saving
-completion. The cycle ID prevents an old run from updating a new cycle. If the
-run budget ends, leave the step pending and save the exact remaining commands,
-candidate IDs and reason in the existing hypothesis queue. Do not record a
-timeout or expected low gain as infeasibility.
+`record` checks evidence, exact ancestry and phase order; the cycle ID stops an
+old run from updating a new cycle. If time runs out, leave the step pending and
+write `search.py handoff` plus the hypothesis-queue entry (candidate IDs,
+remaining commands, reason). A timeout or low expected gain is not infeasibility.
 
 When a concrete check proves the chosen change infeasible or exactly unchanged,
-there is no new feasible output to validate. Preserve a JSON evidence file under
-the storage root with these fields, then pass it as `record ... --evidence FILE`:
+save JSON evidence under the storage root and pass `record ... --evidence FILE`:
 
 ```json
 {
@@ -118,13 +96,11 @@ the storage root with these fields, then pass it as `record ... --evidence FILE`
 }
 ```
 
-`conclusion` is `infeasible` or `no_change`. For combined infeasibility, cover all
-assigned sources and explain the incompatible changes with measured evidence;
-do not invent parent contributions or substitute a pairwise candidate silently.
-Existing feasible outputs still require their own official checks before closing
-the step. Store each report's recipe and source provenance in its candidate.
+`conclusion` is `infeasible` or `no_change`. Combined infeasibility must cover
+all assigned sources with measured incompatibilities. Existing feasible outputs
+still need their own official checks before closing a step.
 
-The Chinese run report lists each task's Top-3 IDs, cycle ID, independent results,
-separate combined result and remaining work. After completing the round, `plan`
-refreshes Top-3 from valid official results for the next round. `state.best`
-continues to contain only the promoted winner used by the submission pipeline.
+After the round completes, `plan` refreshes Top-3 from valid official results.
+`state.best` holds only the promoted winner used by the submission pipeline. The
+report skeleton (`search.py report`) already lists cycle IDs, roots, step results
+and the combined outcome.

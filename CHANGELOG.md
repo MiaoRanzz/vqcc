@@ -1,5 +1,19 @@
 # 版本更迭
 
+## 复盘周期、论文阅读与接力效率 — 2026-11-03
+
+- 每周复盘改为每两天复盘（上海日历日，锚定 2026-11-01，`review_period_days` 可调）；
+  复盘包含回顾、公开论文阅读和带增益/成功率/工时估计的优化思路建议，单轮上限 25%。
+  新增 skill 参考 `review.md`、`papers.md`，论文库为 `research/papers/index.json`。
+- 优化运行按固定六步执行并为固定开销设上限；`search.py brief` 启动视图、
+  `handoff` 接力记录、`rank` 假设排序、`report` 中文报告骨架、
+  `record --auto-no-change` 关闭无可合并改进的组合步；`allocation` 增加 `share`。
+- `runner.py queue-validate` 把长验证交给队列（`local_validate`，来源 `agent`），
+  由 daemon 在模型任务之间执行，同一候选去重、排队上限 3。
+- `pipeline.py create --recipe-from` 复制父候选的生成配方供参考。
+- runner 上下文移除 `one_submission_per_shanghai_date`，额度时区默认 UTC。
+- 门槛规则只在 `AGENTS.md` 表述；skill、参考文档与优化提示改为引用。
+
 ## 搜索吞吐与调度 — 2026-11-03
 
 - 提交改为每天一次 UTC 23:40（北京时间 07:40），窗口 20 分钟、每天最多一次成功；
