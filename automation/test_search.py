@@ -1,5 +1,6 @@
 """Top-3 control tests use tiny artificial artifacts, never scientific validators."""
 from copy import deepcopy
+import math
 import unittest
 from unittest.mock import patch
 
@@ -206,6 +207,49 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(next_plan['tasks']['invsqrt']['cycle_id'], cycle['cycle_id'])
         self.assertEqual(next_plan['tasks']['invsqrt']['status'], 'completed')
         self.assertEqual(next_plan['tasks']['dqi']['status'], 'active')
+
+
+    def test_close_relatives_do_not_fill_top3_but_unrelated_near_ties_do(self):
+        search, ids = self.seed()
+        sibling = self.child([ids[0]], cost=70.03)
+        unrelated = self.fixture('invsqrt', 70.02)
+        path, data = self.pipeline.candidate(unrelated)
+        data.update(parent=None, parents=[])  # e.g. an imported public artifact
+        write_json(path / 'candidate.json', data)
+        self.pipeline.config['top3_min_relative_gap'] = 0.001
+        cycle = search.plan('invsqrt')['tasks']['invsqrt']
+        self.assertEqual([item['id'] for item in cycle['roots']], [ids[0], unrelated, ids[1]])
+        self.assertIn({'id': sibling, 'reason': f'near_duplicate_of {ids[0]}'}, cycle['ranking_exclusions'])
+
+    def test_far_better_leader_preempts_unfinished_cycle(self):
+        search, ids = self.seed()
+        first = search.plan('invsqrt')['tasks']['invsqrt']
+        leader = self.fixture('invsqrt', 69.5)
+        self.pipeline.config['top3_preempt_fraction'] = 0.01
+        self.assertEqual(search.plan('invsqrt')['tasks']['invsqrt']['cycle_id'], first['cycle_id'])
+        leader = self.fixture('invsqrt', 60)
+        cycle = search.plan('invsqrt')['tasks']['invsqrt']
+        self.assertNotEqual(cycle['cycle_id'], first['cycle_id'])
+        self.assertEqual(cycle['roots'][0]['id'], leader)
+        self.assertEqual(cycle['replaces']['cycle_id'], first['cycle_id'])
+        archived = read_json(self.pipeline.storage / 'research/top3-history' / (first['cycle_id'] + '.json'))
+        self.assertEqual(archived['status'], 'preempted')
+        with self.assertRaises(PipelineError):
+            search.record('invsqrt', first['cycle_id'], 'top1', [self.child([ids[0]])])
+
+    def test_frontier_orders_tasks_by_public_headroom(self):
+        search, ids = self.seed()
+        self.pipeline.promote(ids[0])
+        allocation = search.frontier('invsqrt', 35, 'notebook/v3', 'claimed')['allocation']
+        self.assertEqual(allocation[0]['task'], 'invsqrt')
+        self.assertAlmostEqual(allocation[0]['log_score_headroom'], math.log(2) / 3)
+        self.assertEqual({row['status'] for row in allocation[1:]}, {'unknown_frontier'})
+        search.frontier('invsqrt', 50, 'other/v1', 'claimed')
+        stored = read_json(self.pipeline.storage / 'research/frontier.json')['invsqrt']
+        self.assertEqual((stored['cost'], len(stored['history'])), (35, 2))
+        self.assertEqual(search.plan('invsqrt')['allocation'][0]['public_best'], 35)
+        with self.assertRaises(PipelineError):
+            search.frontier('dqi', 1, 'x', None)
 
 
 if __name__ == '__main__':

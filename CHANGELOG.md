@@ -1,5 +1,18 @@
 # 版本更迭
 
+## 搜索吞吐与调度 — 2026-11-03
+
+- 提交改为每天一次 UTC 23:40（北京时间 07:40），窗口 20 分钟、每天最多一次成功；
+  新增 `submission_timezone`。对账移到北京时间 09:00，且对账完成后其剩余时段交还优化。
+- 优化全天按小时接力（`optimize_slot_minutes`），运行在对账前结束；排队中最多一个
+  自动优化作业；每日模型作业上限 30；自动优化可按题开子代理。
+- `pipeline.py validate` 只在读写状态时持有全局锁，按候选加锁；`validation_parallelism`
+  限制并发验证并分配 verifier worker。
+- Top-3 排除成本相差小于 `top3_min_relative_gap` 的近亲候选；验证过的领先者比全部
+  父本低 `top3_preempt_fraction` 以上时，`plan` 抢占刷新该题周期。
+- 新增 `search.py frontier` 记录各题公开最优成本，`plan` 输出按综合分差距排序的
+  `allocation`；每轮优化先做增量公开代码检查。
+
 ## Claude Code 适配 — 2026-11-03
 
 - 新增 `CLAUDE.md`（导入 `AGENTS.md`）、`.claude/settings.json` 和指向

@@ -12,8 +12,12 @@ def after_optimization(config):
 
 
 def submission_windows(config, now):
-    """Configured submission intervals on the current scheduler calendar day."""
-    local = now.astimezone(ZoneInfo(config.get('timezone', 'Asia/Shanghai')))
+    """Configured submission intervals on the current calendar day of their zone.
+
+    `submission_timezone` lets times be written in UTC; it defaults to the scheduler zone.
+    """
+    zone = config.get('submission_timezone', config.get('timezone', 'Asia/Shanghai'))
+    local = now.astimezone(ZoneInfo(zone))
     times = (config.get('daily_submission_times', [])
              if config.get('submission_policy') == 'daily_windows'
              else [config.get('daily_submission_time', '20:00')])

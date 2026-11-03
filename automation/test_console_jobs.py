@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 import fcntl
 import json
 import os
@@ -18,6 +18,13 @@ from jobs import ControlError, Jobs, atomic_json
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = json.loads((ROOT / 'automation/config.json').read_text())
+# Pin the earlier schedule and budget defaults; these cases test queue logic, not the current deployment.
+for _key in ('submission_timezone', 'optimize_slot_minutes', 'daily_model_limit',
+             'optimize_allow_subagents', 'validation_parallelism'):
+    BASE.pop(_key, None)
+BASE.update(daily_submission_time='20:00', daily_submission_times=['08:00', '20:00'], max_daily_submissions=3,
+            submit_window_minutes=45, reconcile_time='20:55',
+            optimize_windows=[['00:10', '05:55'], ['06:10', '07:25'], ['09:10', '11:55'], ['12:10', '17:55'], ['18:10', '19:25']])
 
 
 class QueueTests(unittest.TestCase):
@@ -47,6 +54,17 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(ControlError) as caught:
             self.enqueue(hypothesis='different')
         self.assertEqual(caught.exception.code, 'STATE_CONFLICT')
+
+    def test_relay_optimize_slots_do_not_pile_up_and_may_use_subagents(self):
+        self.jobs.base['optimize_allow_subagents'] = True
+        self.jobs.enqueue_slot(('2026-10-30-optimize-1000', 'optimize', 3600))
+        self.jobs.enqueue_slot(('2026-10-30-optimize-1100', 'optimize', 3600))
+        jobs = list(self.jobs.snapshot()['jobs'].values())
+        self.assertEqual([job['slot_id'] for job in jobs], ['2026-10-30-optimize-1000'])
+        self.assertTrue(jobs[0]['allow_subagents'])
+        self.jobs.cancel(jobs[0]['job_id'], 'queued', jobs[0]['revision'], 'cancel')
+        self.jobs.enqueue_slot(('2026-10-30-optimize-1100', 'optimize', 3600))
+        self.assertIn('2026-10-30-optimize-1100', [job['slot_id'] for job in self.jobs.snapshot()['jobs'].values()])
 
     def test_cancel_queued_does_not_reserve_model_budget(self):
         job = self.enqueue()
@@ -767,6 +785,41 @@ class DailyWindowsTests(unittest.TestCase):
     test_new_upload_failure_does_not_reuse_an_already_running_query = AfterOptimizationTests.test_new_upload_failure_does_not_reuse_an_already_running_query
     test_upload_followup_recovers_enqueued_query_after_crash_and_config_change = AfterOptimizationTests.test_upload_followup_recovers_enqueued_query_after_crash_and_config_change
     test_upload_followup_waits_for_resume_and_model_budget = AfterOptimizationTests.test_upload_followup_waits_for_resume_and_model_budget
+
+
+
+class DeployedScheduleTests(unittest.TestCase):
+    """A simulated day on the deployed config: every relay slot is dispatchable."""
+
+    def test_day_of_relay_slots_never_hits_protection(self):
+        from runner import select_slot
+        deployed = json.loads((ROOT / 'automation/config.json').read_text())
+        tmp = tempfile.TemporaryDirectory(prefix='vqcc-day-')
+        self.addCleanup(tmp.cleanup)
+        storage = Path(tmp.name)
+        (storage / 'runtime').mkdir()
+        path = storage / 'config.json'
+        atomic_json(path, {**deployed, 'storage_root': str(storage), 'min_free_gib': 0, 'model': 'fake-model',
+                           'python_executable': sys.executable})
+        clock = {'now': datetime.fromisoformat('2026-11-04T00:00:00+08:00')}
+        jobs = Jobs(path, initialize=True, clock=lambda: clock['now'])
+        kinds = []
+        while clock['now'] < datetime.fromisoformat('2026-11-05T00:00:00+08:00'):
+            taken = lambda slot_id: (storage / 'runtime/slots' / (slot_id + '.json')).exists()
+            slot = select_slot(jobs.base, clock['now'], taken)
+            jobs.enqueue_slot(slot)
+            state = jobs.snapshot()
+            for job in [j for j in state['jobs'].values() if j['state'] in {'queued', 'blocked'}]:
+                self.assertIsNone(jobs._window_reason(job, state), (clock['now'], job['slot_id']))
+                kinds.append((job['kind'], job['slot_id']))
+                # The run "finishes" immediately; the next period relays.
+                jobs.cancel(job['job_id'], job['state'], job['revision'], 'simulated-' + job['job_id'])
+            clock['now'] += timedelta(minutes=10)
+        self.assertEqual([slot for kind, slot in kinds if kind == 'submit'], ['2026-11-04-submit-2340'])
+        self.assertEqual([slot for kind, slot in kinds if kind == 'reconcile'], ['2026-11-04-reconcile'])
+        optimize = [slot for kind, slot in kinds if kind == 'optimize']
+        self.assertEqual(len(optimize), 23)  # every hour except 07:00 (upload); 09:00 starts after reconciliation
+        self.assertNotIn('2026-11-04-optimize-0700', optimize)
 
 
 if __name__ == '__main__':

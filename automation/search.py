@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import sys
 import uuid
@@ -21,6 +22,7 @@ class Search:
     def __init__(self, pipeline):
         self.pipeline = pipeline
         self.path = pipeline.storage / 'research/top3.json'
+        self.frontier_path = pipeline.storage / 'research/frontier.json'
 
     def _load(self):
         return read_json(self.path) if self.path.exists() else {
@@ -64,8 +66,66 @@ class Search:
                     state['tasks'][name] = self._new_cycle(name)
                 elif previous['status'] == 'active':
                     self._check_roots(previous)
+                    leader = self._preempting_leader(name, previous)
+                    if leader:
+                        previous.update(status='preempted', preempted_at=self.pipeline.now_string(),
+                                        preempted_by={'id': leader['id'], 'cost': leader['cost']})
+                        write_json(self.path.parent / 'top3-history' / (previous['cycle_id'] + '.json'), previous)
+                        state['tasks'][name] = self._new_cycle(name)
+                        state['tasks'][name]['replaces'] = {'cycle_id': previous['cycle_id'], 'reason': 'preempted_by_leader',
+                                                            'leader': previous['preempted_by']}
+            state['allocation'] = self._allocation()
             self._save(state)
             return state
+
+    def _preempting_leader(self, task, cycle):
+        """A verified result far below every root refreshes this task before the round ends."""
+        fraction = float(self.pipeline.config.get('top3_preempt_fraction', 0))
+        if fraction <= 0 or not cycle['roots']:
+            return None
+        ranking = self.pipeline.top_candidates(task, limit=1)['candidates']
+        if not ranking or ranking[0]['id'] in {root['id'] for root in cycle['roots']}:
+            return None
+        leader = ranking[0]
+        return leader if leader['cost'] < min(root['cost'] for root in cycle['roots']) * (1 - fraction) else None
+
+    def _allocation(self):
+        """Order tasks by log-score headroom to the best known public cost."""
+        frontier = read_json(self.frontier_path) if self.frontier_path.exists() else {}
+        rows = []
+        for task in TASKS:
+            best = self.pipeline.state.get('best', {}).get(task)
+            ours = public = None
+            if best:
+                try:
+                    ours = positive(self.pipeline.verified(best)[2]['score'])
+                except (PipelineError, OSError, ValueError, KeyError):
+                    ours = None
+            if task in frontier:
+                public = frontier[task]['cost']
+            # log(ours/public)/3 is the combined-score gain from matching the public cost.
+            headroom = math.log(ours / public) / 3 if ours and public else None
+            rows.append({'task': task, 'ours': ours, 'public_best': public,
+                         'public_source': frontier.get(task, {}).get('source'), 'log_score_headroom': headroom,
+                         'status': 'unknown_frontier' if public is None else 'behind' if headroom > 0 else 'leading'})
+        order = {'behind': 0, 'unknown_frontier': 1, 'leading': 2}
+        return sorted(rows, key=lambda row: (order[row['status']], -(row['log_score_headroom'] or 0)))
+
+    def frontier(self, task=None, cost=None, source=None, basis=None):
+        """Record the best known public per-task cost; without a cost, report the allocation."""
+        with self.pipeline.locked():
+            if task is not None:
+                if not source or basis not in {'local_official', 'claimed'}:
+                    raise PipelineError('A frontier entry needs its source and basis local_official or claimed')
+                frontier = read_json(self.frontier_path) if self.frontier_path.exists() else {}
+                entry = {'cost': positive(cost), 'source': source, 'basis': basis, 'observed_at': self.pipeline.now_string()}
+                current = frontier.get(task)
+                history = (current or {}).get('history', []) + [entry]
+                frontier[task] = {**(entry if current is None or entry['cost'] < current['cost'] else
+                                     {key: current[key] for key in ('cost', 'source', 'basis', 'observed_at')}),
+                                  'history': history[-50:]}
+                write_json(self.frontier_path, frontier)
+            return {'allocation': self._allocation()}
 
     def _outcome(self, cid, task, parents):
         path, candidate = self.pipeline.candidate(cid)
@@ -156,10 +216,18 @@ def main():
     record.add_argument('--cycle', required=True)
     record.add_argument('--candidate', action='append', default=[])
     record.add_argument('--evidence', type=Path)
+    frontier = commands.add_parser('frontier', help='Record a public per-task cost, or show the headroom allocation')
+    frontier.add_argument('task', nargs='?', choices=TASKS)
+    frontier.add_argument('--cost', type=float)
+    frontier.add_argument('--source', help='Notebook/dataset ref and version')
+    frontier.add_argument('--basis', choices=['local_official', 'claimed'])
     args = parser.parse_args()
     search = Search(Pipeline(args.config))
-    result = search.plan(args.task) if args.command == 'plan' else search.record(
-        args.task, args.cycle, args.step, args.candidate, args.evidence)
+    if args.command == 'frontier' and (args.task is None) != (args.cost is None):
+        parser.error('frontier takes both TASK and --cost, or neither')
+    result = (search.plan(args.task) if args.command == 'plan' else
+              search.frontier(args.task, args.cost, args.source, args.basis) if args.command == 'frontier' else
+              search.record(args.task, args.cycle, args.step, args.candidate, args.evidence))
     print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
 
 

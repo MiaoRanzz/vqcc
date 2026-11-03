@@ -6,18 +6,17 @@ model budget, deadline and `automation/pipeline.py` ledger.
 
 ## Policy and access
 
-The current `daily_windows` policy checks for a fully verified improvement at
-08:00 and 20:00 Asia/Shanghai. Each window lasts 45 minutes and permits at most
-one upload attempt. On 2026-11-03 the user changed the local daily limit to three
-successful submissions per UTC day: count distinct valid positive Kaggle IDs,
-regardless of grading status. Failed uploads without an ID retain their attempt
-history but do not consume the daily success limit. The windows established on
-2026-10-30 still supersede immediate submission after optimization.
+The current `daily_windows` policy (changed 2026-11-03) checks for a fully
+verified improvement once a day at 23:40 UTC (07:40 Asia/Shanghai). The window
+lasts 20 minutes, ending at the UTC quota reset, and permits at most one upload
+attempt and one successful submission per UTC day: count distinct valid positive
+Kaggle IDs, regardless of grading status. Failed uploads without an ID retain
+their attempt history but do not consume the daily success limit. Upload early
+in the window; an upload still running at 00:00 UTC belongs to the next quota day.
 Separately check the official limit of five
 submissions per UTC day, including manual/team submissions.
 
-Carry unsubmitted gains to the next scheduled window, including across the
-08:00 Asia/Shanghai quota reset. No new optimization is required. Prepare the
+Carry unsubmitted gains to the next day's window. No new optimization is required. Prepare the
 **current** best at execution, including improvements made while waiting; retain
 the existing pause, deadline and model-budget controls. Skip windows with no
 eligible improvement rather than uploading an unchanged combination.

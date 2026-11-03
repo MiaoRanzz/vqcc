@@ -19,13 +19,27 @@ slot and use the earliest valid attestation, never a favorable-seed report.
 Officially checked nonwinning candidates can be search parents. DQI promotion
 still requires the existing independent robustness evidence where applicable.
 
+With `top3_min_relative_gap` set, a candidate whose cost is within that relative
+gap of an already selected root and is its ancestor, descendant or sibling (shares
+a direct parent) is excluded as `near_duplicate_of` that root; the next distinct
+family takes the slot. Unrelated near-ties, such as imported public artifacts, stay.
+
 Each task freezes up to three roots for a cycle. If fewer than three qualify,
 report the shortfall and use the available distinct roots. Do not pad with copies
 or unverified estimates. `plan` resumes an active cycle without replacing its
-roots. General runs finish the current round across all three tasks before
+roots, with one exception: when the task's verified leader beats every pinned root
+by at least `top3_preempt_fraction`, `plan` archives the cycle as `preempted` and
+starts a new one led by that candidate (`replaces` names the old cycle). Save the
+preempted cycle's unfinished feasible work in the hypothesis queue; a `record`
+against the old cycle ID is refused. General runs finish the current round across all three tasks before
 refreshing completed cycles; a task-scoped invocation may use `plan --task TASK`.
 Completed cycles are archived in `research/top3-history/` before replacement.
 For an inspection without advancing a cycle, use `pipeline.py top TASK`.
+
+`plan` also returns `allocation`: tasks ordered by `log(our_best / public_best) / 3`,
+the combined log-score headroom to the best known public cost recorded with
+`search.py frontier`. Spend the run's time on the largest headroom first; tasks
+with an unknown frontier need a public scan; `leading` tasks get local work.
 
 ## Independently optimize top1, top2, top3
 

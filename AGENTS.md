@@ -21,6 +21,11 @@ for research, optimization, validation, submission, and competition reporting.
   credentials, large binaries, transient logs, and signed URLs out of Git.
 - Use the configured runner for unattended work and honor its shared lock,
   deadline, and resource controls. Do not start a competing background loop.
+- On 2026-11-03 the user approved continuous optimization: hourly relay slots
+  across the whole day outside the submission protection and reconciliation,
+  with a daily model-task budget of 30. Automatic optimization runs may use
+  per-task subagents within the same aggregate limits; `validation_parallelism`
+  bounds concurrent official verifiers.
 
 ## Scientific and version invariants
 
@@ -36,7 +41,10 @@ for research, optimization, validation, submission, and competition reporting.
   validation bound to its exact artifacts; branch PASS does not validate a merge.
   Use `automation/search.py plan` and `record` to pin parents and persist phase
   progress across runs. Finish the independent branches before the combined
-  phase; do not replace unfinished branches when a new best appears. Retain all
+  phase; do not replace unfinished branches when a new best appears, except that
+  `plan` refreshes a task whose verified leader beats every pinned root by at
+  least `top3_preempt_fraction`. Close relatives within `top3_min_relative_gap`
+  of a selected root do not occupy another slot. Retain all
   contributing parents for a combined candidate. Fewer than three eligible
   distinct candidates is a recorded shortfall, not a reason to duplicate one.
   Submission still uses the single promoted best per task and its existing gates.
@@ -63,21 +71,20 @@ for research, optimization, validation, submission, and competition reporting.
 
 ## Authorized external actions
 
-- On 2026-10-30 the user changed unattended Kaggle uploads to two daily windows:
-  08:00 and 20:00 Asia/Shanghai, each lasting 45 minutes and allowing at most one
-  attempt. This supersedes submission immediately after each optimization.
-  On 2026-11-03 the user changed the local daily limit to three successful
-  submissions per UTC day. Success means a valid positive Kaggle submission ID,
+- On 2026-11-03 the user changed unattended Kaggle uploads to one daily window
+  at 23:40 UTC (07:40 Asia/Shanghai), lasting 20 minutes so it ends at the UTC
+  quota reset, allowing at most one attempt and at most one successful submission
+  per UTC day. This supersedes the 2026-10-30 08:00/20:00 windows and the earlier
+  three-success limit. Success means a valid positive Kaggle submission ID,
   regardless of grading status; count each ID once. Failed uploads without an
   ID retain their attempt records but do not consume this daily success limit.
-  The two windows and one-attempt-per-window rule remain unchanged.
   Separately respect the official maximum of five submissions per UTC day and
   check current remote team history before uploading. Retain the configured
   model-task budget. Submit only fully verified improvements over the recorded
   submitted incumbent; skip unchanged, unverified or already-attempted combinations.
   Do not ask for routine submission approval.
-- Carry unsubmitted verified improvements into the next scheduled window,
-  including after the 08:00 Asia/Shanghai quota reset. Prioritize the pending best
+- Carry unsubmitted verified improvements into the next day's window.
+  Prioritize the pending best
   at that window; no new optimization is required to trigger it. Reuse the
   existing queue and prepare the current verified best at execution.
 - Use `automation/pipeline.py` for preparation and the submission ledger. Reserve

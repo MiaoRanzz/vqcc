@@ -36,6 +36,13 @@ then combines their compatible improvements. Current best remains the promotion
 benchmark; it is not the only search parent. Each branch result and combined
 result must separately pass through `pipeline.py validate` before being recorded.
 
+Before choosing work, run the quick public check in
+[public-code.md](references/public-code.md) and read `plan`'s `allocation`: give
+most time to the task with the largest public headroom, and adopt or reproduce a
+better public method before local micro-tuning. When the runner allows subagents,
+work on the three tasks in parallel with one subagent per task; official
+verifications may overlap up to `validation_parallelism`.
+
 First resume feasible proposals/candidates awaiting generation or full official
 verification from the hypothesis queue and recent experiment records. Use the
 existing runner and its limits; do not lose unfinished checks between runs.

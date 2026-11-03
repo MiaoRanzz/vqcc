@@ -10,7 +10,13 @@ from runner import event_summary, proc_table, redact, select_slot
 class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.cfg = json.loads((Path(__file__).parent / 'config.json').read_text())
-        self.cfg['submission_policy'] = 'daily_window'
+        # Pin the earlier schedule; these cases test slot logic, not the current deployment.
+        for key in ('submission_timezone', 'optimize_slot_minutes'):
+            self.cfg.pop(key, None)
+        self.cfg.update(submission_policy='daily_window', daily_submission_time='20:00', submit_window_minutes=45,
+                        reconcile_time='20:55',
+                        optimize_windows=[['00:10', '05:55'], ['06:10', '07:25'], ['09:10', '11:55'],
+                                          ['12:10', '17:55'], ['18:10', '19:25']])
 
     def at(self, value):
         return dt.datetime.fromisoformat(value)
@@ -71,6 +77,28 @@ class RunnerTests(unittest.TestCase):
         slot = select_slot(cfg, self.at('2026-10-30T06:10:00+08:00'))
         self.assertEqual(slot[1:], ('optimize', 75 * 60))
         self.assertIsNone(select_slot(cfg, self.at('2026-10-30T07:25:00+08:00')))
+
+    def test_deployed_daily_utc_submission_and_relay_optimization(self):
+        cfg = json.loads((Path(__file__).parent / 'config.json').read_text())
+        # One submission at 23:40 UTC, inside the UTC quota day.
+        self.assertEqual(select_slot(cfg, self.at('2026-11-03T23:40:00+00:00'))[:2], ('2026-11-04-submit-2340', 'submit'))
+        self.assertEqual(select_slot(cfg, self.at('2026-11-03T23:59:00+00:00'))[2], 60)
+        self.assertIsNone(select_slot(cfg, self.at('2026-11-03T23:10:00+00:00')))
+        self.assertIsNone(select_slot(cfg, self.at('2026-11-04T07:00:00+08:00')))
+        # A run before the upload stops at the 35 minute protection.
+        _, mode, seconds = select_slot(cfg, self.at('2026-11-04T05:00:00+08:00'))
+        self.assertEqual((mode, seconds), ('optimize', 2 * 3600 + 5 * 60))
+        # Hourly relay slots; runs stop before reconciliation, which then yields back.
+        self.assertEqual(select_slot(cfg, self.at('2026-11-04T08:30:00+08:00')), ('2026-11-04-optimize-0800', 'optimize', 20 * 60))
+        self.assertIsNone(select_slot(cfg, self.at('2026-11-04T08:46:00+08:00')))
+        self.assertEqual(select_slot(cfg, self.at('2026-11-04T09:10:00+08:00'))[:2], ('2026-11-04-reconcile', 'reconcile'))
+        taken = lambda slot_id: slot_id == '2026-11-04-reconcile'
+        self.assertIsNone(select_slot(cfg, self.at('2026-11-04T09:10:00+08:00'), taken))
+        slot = select_slot(cfg, self.at('2026-11-04T09:20:00+08:00'), taken)
+        self.assertEqual(slot, ('2026-11-04-optimize-0900', 'optimize', cfg['max_agent_seconds']))
+        self.assertEqual(select_slot(cfg, self.at('2026-11-04T21:59:00+08:00'))[:2], ('2026-11-04-optimize-2100', 'optimize'))
+        _, _, seconds = select_slot(cfg, self.at('2026-11-04T22:00:00+08:00'))
+        self.assertEqual(seconds, 119 * 60)
 
     def test_proc_rss_reads_real_current_process(self):
         import os

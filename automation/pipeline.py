@@ -398,10 +398,19 @@ class Pipeline:
             ranked.append((min(item[2] for item in copies), created, cid, False, signature))
         heapq.heapify(ranked)
         selected, checked = [], {}
+        gap = float(self.config.get("top3_min_relative_gap", 0))
+        lineage = {}
         while ranked and len(selected) < limit:
             _, _, _, ready, signature = heapq.heappop(ranked)
             if ready:
-                selected.append({"rank": len(selected) + 1, **checked[signature]})
+                entry = checked[signature]
+                # A close relative within the gap adds no search diversity.
+                near = next((item for item in selected if abs(entry["cost"] / item["cost"] - 1) < gap
+                             and self._related(entry["id"], item["id"], lineage)), None) if gap > 0 else None
+                if near:
+                    excluded.append({"id": entry["id"], "reason": f"near_duplicate_of {near['id']}"})
+                    continue
+                selected.append({"rank": len(selected) + 1, **entry})
                 continue
             for created, cid, _ in groups[signature]:
                 try:
@@ -423,6 +432,29 @@ class Pipeline:
             }
             heapq.heappush(ranked, (positive(report["score"]), created, cid, True, signature))
         return {"task": task, "requested": limit, "candidates": selected, "excluded": excluded}
+
+    def _parents(self, cid, lineage):
+        if cid not in lineage:
+            try:
+                _, data = self.candidate(cid)
+            except (PipelineError, OSError, ValueError):
+                data = {}
+            lineage[cid] = set(data.get("parents") or ([data["parent"]] if data.get("parent") else []))
+        return lineage[cid]
+
+    def _related(self, a, b, lineage):
+        """Ancestor/descendant or siblings sharing a direct parent."""
+        if self._parents(a, lineage) & self._parents(b, lineage):
+            return True
+        for start, target in ((a, b), (b, a)):
+            seen, stack = set(), [start]
+            while stack:
+                for parent in self._parents(stack.pop(), lineage) - seen:
+                    if parent == target:
+                        return True
+                    seen.add(parent)
+                    stack.append(parent)
+        return False
 
     def create(self, task, hypothesis, source, license_info, parent=None, parents=None):
         self.active()
@@ -467,66 +499,101 @@ class Pipeline:
             raise PipelineError("Conda interpreter identity does not match the selected environment")
         return [conda, "run", "--no-capture-output", "-n", env_name, str(executable)], identity
 
+    @contextlib.contextmanager
+    def candidate_lock(self, cid):
+        """One validation per candidate; the global lock stays free while a verifier runs."""
+        path, _ = self.candidate(cid)
+        with open(path / ".validate.lock", "a+") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            yield
+
+    @contextlib.contextmanager
+    def validation_slot(self):
+        """Bound concurrent verifiers; yield the worker count each may use."""
+        slots = max(1, int(self.config.get("validation_parallelism", 1)))
+        workers = max(1, min(int(self.config.get("cpu_limit", 20)) // slots, 16))
+        directory = self.state_path.parent / "validation-slots"
+        directory.mkdir(exist_ok=True)
+        while True:
+            for index in range(slots):
+                stream = open(directory / f"{index}.lock", "a+")
+                try:
+                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    stream.close()
+                    continue
+                try:
+                    yield workers
+                finally:
+                    stream.close()
+                return
+            time.sleep(1)
+
     def validate(self, cid, robustness=False):
         self.active()
-        with self.locked():
-            self.disk_check()
-            path, data = self.candidate(cid)
-            task = data["task"]
-            if robustness and task != "dqi":
-                raise PipelineError("Automatic independent-seed replication is limited to DQI finalists")
-            if robustness:
-                self.verified(cid)
-            elif data.get("verification"):
-                try:
-                    _, _, previous_report = self.verified(cid)
-                except PipelineError:
-                    data.pop("verification", None)
-                    write_json(path / "candidate.json", data)
-                else:
-                    return {"status": "PASS", "id": cid, "kind": "reused_official", "cost": previous_report["score"], "report": str(path / data["verification"]["report"])}
-            before = artifact_manifest(path / "output", task)
-            verifier_before = self.verifier_manifest()
-            command, identity = self.runtime()
+        with self.candidate_lock(cid):
+            with self.locked():
+                self.disk_check()
+                path, data = self.candidate(cid)
+                task = data["task"]
+                if robustness and task != "dqi":
+                    raise PipelineError("Automatic independent-seed replication is limited to DQI finalists")
+                if robustness:
+                    self.verified(cid)
+                elif data.get("verification"):
+                    try:
+                        _, _, previous_report = self.verified(cid)
+                    except PipelineError:
+                        data.pop("verification", None)
+                        write_json(path / "candidate.json", data)
+                    else:
+                        return {"status": "PASS", "id": cid, "kind": "reused_official", "cost": previous_report["score"], "report": str(path / data["verification"]["report"])}
+                before = artifact_manifest(path / "output", task)
+                verifier_before = self.verifier_manifest()
+                command, identity = self.runtime()
             input_path = path / "output" if task == "dfthcsos" else path / "output" / before[0]["path"]
             command += [str(self.root / VERIFIERS[task]), str(input_path)]
-            if task != "dfthcsos":
-                command += ["--max-workers", str(min(int(self.config.get("cpu_limit", 20)), 16))]
-            seed = secrets.randbits(128) if robustness else None
-            if seed is not None:
-                command += ["--seed", str(seed)]
-            suffix = f"robustness-{uuid.uuid4().hex[:8]}" if robustness else f"official-{uuid.uuid4().hex[:8]}"
-            env = os.environ.copy()
-            env.update({"PYTHONPATH": str(self.root / "kickmix"), "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"})
-            started = self.now_string()
-            start = time.monotonic()
-            source = self.source_snapshot(path / f"{suffix}-source", path)
-            with open(path / f"{suffix}.stdout", "w") as out, open(path / f"{suffix}.stderr", "w") as err:
-                result = subprocess.run(command, cwd=self.root, env=env, stdout=out, stderr=err)
-            if before != artifact_manifest(path / "output", task) or verifier_before != self.verifier_manifest():
-                raise PipelineError("Artifacts or verifier changed during validation")
-            try:
-                report = read_json(path / f"{suffix}.stdout")
-            except (ValueError, OSError):
-                report = {"status": "FAIL", "error": "Verifier did not return a JSON report"}
-            write_json(path / f"{suffix}.json", report)
-            record = {"kind": "robustness" if robustness else "official", "started_at": started, "finished_at": self.now_string(), "elapsed_seconds": time.monotonic() - start, "command": command, "runtime": identity, "runtime_fingerprint": self.runtime_fingerprint(), "returncode": result.returncode, "passed": False, "seed": seed, "artifacts": before, "verifiers": verifier_before, "report": f"{suffix}.json", "report_sha256": sha256(path / f"{suffix}.json"), "source": source}
-            data.setdefault("runs", []).append(record)
-            if result.returncode == 0:
+            with self.validation_slot() as workers:
+                if task != "dfthcsos":
+                    command += ["--max-workers", str(workers)]
+                seed = secrets.randbits(128) if robustness else None
+                if seed is not None:
+                    command += ["--seed", str(seed)]
+                suffix = f"robustness-{uuid.uuid4().hex[:8]}" if robustness else f"official-{uuid.uuid4().hex[:8]}"
+                env = os.environ.copy()
+                env.update({"PYTHONPATH": str(self.root / "kickmix"), "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"})
+                started = self.now_string()
+                start = time.monotonic()
+                source = self.source_snapshot(path / f"{suffix}-source", path)
+                with open(path / f"{suffix}.stdout", "w") as out, open(path / f"{suffix}.stderr", "w") as err:
+                    result = subprocess.run(command, cwd=self.root, env=env, stdout=out, stderr=err)
+            with self.locked():
+                # Other candidates may have changed meanwhile; this one is held by candidate_lock.
+                path, data = self.candidate(cid)
+                if before != artifact_manifest(path / "output", task) or verifier_before != self.verifier_manifest():
+                    raise PipelineError("Artifacts or verifier changed during validation")
                 try:
-                    check_report(task, report, before)
-                except PipelineError:
-                    write_json(path / "candidate.json", data)
-                    raise
-                record["passed"] = True
-                if robustness:
-                    data.setdefault("robustness", []).append(record)
-                else:
-                    data["verification"] = record
-            write_json(path / "candidate.json", data)
-            if result.returncode != 0:
-                raise PipelineError(f"Official verifier failed; inspect {path / (suffix + '.stderr')} and stdout")
-            return {"status": "PASS", "id": cid, "kind": record["kind"], "cost": report["score"], "report": str(path / record["report"])}
+                    report = read_json(path / f"{suffix}.stdout")
+                except (ValueError, OSError):
+                    report = {"status": "FAIL", "error": "Verifier did not return a JSON report"}
+                write_json(path / f"{suffix}.json", report)
+                record = {"kind": "robustness" if robustness else "official", "started_at": started, "finished_at": self.now_string(), "elapsed_seconds": time.monotonic() - start, "command": command, "runtime": identity, "runtime_fingerprint": self.runtime_fingerprint(), "returncode": result.returncode, "passed": False, "seed": seed, "artifacts": before, "verifiers": verifier_before, "report": f"{suffix}.json", "report_sha256": sha256(path / f"{suffix}.json"), "source": source}
+                data.setdefault("runs", []).append(record)
+                if result.returncode == 0:
+                    try:
+                        check_report(task, report, before)
+                    except PipelineError:
+                        write_json(path / "candidate.json", data)
+                        raise
+                    record["passed"] = True
+                    if robustness:
+                        data.setdefault("robustness", []).append(record)
+                    else:
+                        data["verification"] = record
+                write_json(path / "candidate.json", data)
+                if result.returncode != 0:
+                    raise PipelineError(f"Official verifier failed; inspect {path / (suffix + '.stderr')} and stdout")
+                return {"status": "PASS", "id": cid, "kind": record["kind"], "cost": report["score"], "report": str(path / record["report"])}
 
     def promote(self, cid):
         self.active()

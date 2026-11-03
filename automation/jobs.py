@@ -620,10 +620,17 @@ class Jobs:
             return
         if slot_id in snapshot['slots'] or (self.storage / 'runtime/slots' / (slot_id + '.json')).exists():
             return
+        if mode == 'optimize' and any(job['kind'] == 'optimize' and job.get('origin') == 'automatic'
+                                      and job['state'] in QUEUED | ACTIVE for job in snapshot['jobs'].values()):
+            # Relay slots never pile up behind a running optimization.
+            return
         seconds = min(seconds, self._active_config(snapshot)['max_agent_seconds'])
         # Keep the existing slot deadline, reserving time for process cleanup.
         expires = self.now() + timedelta(seconds=seconds)
         request = {'kind': mode, 'max_seconds': max(30, seconds - 10)}
+        if mode == 'optimize' and self.base.get('optimize_allow_subagents'):
+            # The three tasks are independent; per-task subagents share the run's limits.
+            request['allow_subagents'] = True
         result = self.enqueue(request, 'slot:' + slot_id, origin='automatic', slot_id=slot_id, expires_at=expires.isoformat())
         atomic_json(self.storage / 'runtime/slots' / (slot_id + '.json'),
                     {'slot': slot_id, 'mode': mode, 'job_id': result['job_id'], 'status': 'queued', 'created_at': result['created_at']})

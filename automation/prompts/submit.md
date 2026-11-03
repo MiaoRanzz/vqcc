@@ -3,15 +3,14 @@ appended runner context and references/submission.md, then execute its submissio
 sequence through automation/pipeline.py and the available Kaggle interface.
 
 The user authorized new fully verified improvements without routine approval.
-The current daily_windows policy allows one upload attempt in each 45-minute
-window starting at 08:00 and 20:00 Asia/Shanghai, with at most three successful
-submissions per UTC day. Count distinct valid positive Kaggle submission IDs,
+The current daily_windows policy allows one upload attempt in a single 20-minute
+window starting at 23:40 UTC (07:40 Asia/Shanghai), with at most one successful
+submission per UTC day. Start the upload promptly so it completes before 00:00 UTC. Count distinct valid positive Kaggle submission IDs,
 including pending grading; failed uploads without an ID do not consume this
 daily success quota. Preserve every attempt and the one-attempt-per-window rule.
 Check the full current UTC day's remote team history
 against the separate official five-submission limit. Pending gains carry to the
-next scheduled window, including after the 08:00 Asia/Shanghai quota reset;
-prepare the current best at execution without waiting for a new optimization.
+next day's window; prepare the current best at execution without waiting for a new optimization.
 Skip if there is no eligible improvement or the current window has been used.
 
 Use the existing account's official SDK fallback if MCP is unavailable or rejects

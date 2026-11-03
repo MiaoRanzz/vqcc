@@ -51,8 +51,12 @@ def load_config(path):
     return cfg
 
 
-def select_slot(cfg, now):
-    """Return a single eligible slot; never catch up missed submission days."""
+def select_slot(cfg, now, taken=lambda slot_id: False):
+    """Return a single eligible slot; never catch up missed submission days.
+
+    `taken(slot_id)` reports slots already enqueued, so a finished reconciliation
+    hands its remaining window back to optimization.
+    """
     now = now.astimezone(ZoneInfo(cfg['timezone']))
     if now >= dt.datetime.fromisoformat(cfg['deadline']):
         return None
@@ -67,10 +71,18 @@ def select_slot(cfg, now):
                 suffix = '-' + start.strftime('%H%M') if policy == 'daily_windows' else ''
                 return f'{day}-submit{suffix}', 'submit', min(cfg['submit_timeout_seconds'], int((end - now).total_seconds()))
     check = at(cfg['reconcile_time'])
-    if check <= now < check + dt.timedelta(hours=2):
+    if check <= now < check + dt.timedelta(hours=2) and not taken(f'{day}-reconcile'):
         return f'{day}-reconcile', 'reconcile', cfg['reconcile_timeout_seconds']
+    if check <= now < check + dt.timedelta(seconds=cfg['reconcile_timeout_seconds']):
+        # Matches the queue's protection of the reconciliation's own time budget.
+        return None
+    slot_minutes = cfg.get('optimize_slot_minutes')
     for start_s, end_s in cfg['optimize_windows']:
         start, end = at(start_s), at(end_s)
+        if now < check:
+            # A run must not hold the serial runner across the daily reconciliation;
+            # the queue protects the 10 minutes before it as well.
+            end = min(end, check - dt.timedelta(minutes=10))
         if policy == 'daily_windows':
             # Leave the shared runner free for each upload, including cleanup.
             for submit_start, submit_end in windows:
@@ -82,7 +94,11 @@ def select_slot(cfg, now):
         if start <= now < end - dt.timedelta(minutes=5):
             seconds = min(cfg['max_agent_seconds'], int((end - now).total_seconds()))
             seconds = min(seconds, int((dt.datetime.fromisoformat(cfg['deadline']) - now).total_seconds()))
-            return f'{day}-optimize-{start_s.replace(":", "")}', 'optimize', seconds
+            if slot_minutes:
+                # Relay: a new slot each period, so finished runs are followed within one period.
+                period = dt.timedelta(minutes=slot_minutes)
+                start = start + (now - start) // period * period
+            return f'{day}-optimize-{start.strftime("%H%M")}', 'optimize', seconds
     return None
 
 
@@ -222,6 +238,7 @@ def execute(mode, cfg, config_path, seconds, slot_id, state_path, *, job=None, c
         'submission_quota_basis': cfg.get('submission_quota_basis', 'attempts'),
         'submission_quota_timezone': cfg.get('submission_quota_timezone', cfg['timezone']),
         'daily_submission_times': cfg.get('daily_submission_times', [cfg['daily_submission_time']]),
+        'submission_timezone': cfg.get('submission_timezone', cfg['timezone']),
         'official_max_daily_submissions': cfg.get('official_max_daily_submissions', 5),
         'one_submission_per_shanghai_date': cfg.get('submission_policy', 'daily_window') == 'daily_window',
     }
@@ -422,8 +439,8 @@ def main():
     if not storage.is_dir():
         raise RuntimeError('Storage missing; provision it first. Do not silently write experiments to the system disk.')
     now = dt.datetime.now(ZoneInfo(cfg['timezone']))
-    slot = select_slot(cfg, now)
     runtime = storage / 'runtime'
+    slot = select_slot(cfg, now, lambda slot_id: (runtime / 'slots' / (slot_id + '.json')).exists())
     runtime.mkdir(exist_ok=True)
     if args.mode == 'daemon':
         return run_daemon(cfg, args.config.resolve())

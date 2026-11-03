@@ -19,8 +19,14 @@ class ReadModelTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.cfg = json.loads((ROOT / "automation/config.json").read_text())
         self.cfg["storage_root"] = str(self.root)
-        for key in ("submission_policy", "max_daily_submissions", "submission_quota_timezone", "submission_quota_basis"):
+        for key in ("submission_policy", "max_daily_submissions", "submission_quota_timezone", "submission_quota_basis",
+                    "submission_timezone", "optimize_slot_minutes", "daily_model_limit"):
             self.cfg.pop(key, None)
+        # Pin the earlier schedule; these cases test projections, not the current deployment.
+        self.cfg.update(daily_submission_time="20:00", daily_submission_times=["08:00", "20:00"],
+                        submit_window_minutes=45, reconcile_time="20:55",
+                        optimize_windows=[["00:10", "05:55"], ["06:10", "07:25"], ["09:10", "11:55"],
+                                          ["12:10", "17:55"], ["18:10", "19:25"]])
         self.config = self.root / "config.json"
         self.write(self.config, self.cfg)
         self.model = ReadModel(self.config)
@@ -202,11 +208,23 @@ class ReadModelTests(unittest.TestCase):
         self.assertEqual(result['next_optimization_at'], '2026-10-30T12:10:00+08:00')
         self.assertEqual(result['optimization_available'], 1)
         self.assertEqual(result['submission_available'], 1)
-        self.assertIn('每个优化时段只创建一轮', result['message'])
+        self.assertIn('每个优化槽位只创建一轮', result['message'])
         scheduler['paused'] = True
         self.assertIn('暂停', self.model.queue_status([], scheduler, usage)['message'])
         scheduler.update(paused=False, dispatch_enabled=False)
         self.assertIn('未运行', self.model.queue_status([], scheduler, usage)['message'])
+
+    def test_deployed_relay_projection_skips_upload_protection(self):
+        self.after_optimization('2026-11-04T07:01:00+08:00')
+        deployed = json.loads((ROOT / "automation/config.json").read_text())
+        self.model.config.update({key: deployed[key] for key in (
+            'submission_policy', 'daily_submission_times', 'submission_timezone', 'submit_window_minutes',
+            'optimize_windows', 'optimize_slot_minutes', 'reconcile_time', 'reconcile_timeout_seconds')})
+        scheduler = {'process_alive': True, 'paused': False}
+        usage = {'available': 10, 'reserve_submit': 1, 'reserve_reconcile': 1, 'reservations': []}
+        result = self.model.queue_status([], scheduler, usage)
+        self.assertEqual(result['next_optimization_at'], '2026-11-04T08:00:00+08:00')
+        self.assertEqual(result['next_reconcile_at'], '2026-11-04T09:00:00+08:00')
 
     def test_queue_next_day_and_deadline_are_not_execution_promises(self):
         self.after_optimization('2026-10-30T23:30:00+08:00')

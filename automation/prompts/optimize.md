@@ -15,10 +15,16 @@ branches of that same task. Each independent output AND each combined output
 must separately run pipeline.py validate and retain its own artifact-bound report.
 Do not infer a combined PASS from three branch PASS reports. Record all completed
 outputs using search.py record; an unverified output cannot complete a phase.
-Do not replace pending top2/top3 branches when top1 improves. Continue incomplete
+Do not replace pending top2/top3 branches when top1 improves; only `plan` may
+preempt a cycle (leader beats every root by top3_preempt_fraction). Continue incomplete
 cycles across runs and finish the current round across tasks before starting a
 new general round. Source public methods and research hypotheses to serve the
 assigned branches, rather than reverting to a single-best-only search.
+
+Start with the quick incremental public-code check and record new public costs
+with `search.py frontier`; then order work by `plan`'s `allocation` (largest public
+headroom first). When subagents are allowed, run one subagent per task in parallel.
+Runs relay hourly, so checkpoint progress continuously rather than only at the end.
 
 First resume feasible optimizations awaiting generation or full official
 validation in the existing hypothesis queue and recent candidate records.

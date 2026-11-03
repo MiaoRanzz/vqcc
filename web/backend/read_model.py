@@ -15,7 +15,7 @@ import threading
 import time
 from zoneinfo import ZoneInfo
 
-from automation.runner import redact
+from automation.runner import redact, select_slot
 from automation.submission_policy import (ATTEMPTED, submission_allowance, submission_quota_date,
                                           submission_success_date, successful_submission_id)
 from .artifacts import ArtifactRegistry
@@ -798,23 +798,13 @@ class ReadModel:
         control = self.control()
         occupied = set(control.get('slots', {})) | {path.stem for path in (self.storage / 'runtime/slots').glob('*.json')}
         upcoming = {'optimize': None, 'reconcile': None}
-        for offset in (0, 1):
-            day = now + timedelta(days=offset)
-            windows = [('optimize', start, end) for start, end in self.config['optimize_windows']]
-            windows.append(('reconcile', self.config['reconcile_time'], None))
-            for kind, start, end in windows:
-                hour, minute = map(int, start.split(':'))
-                begins = day.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                if end:
-                    hour, minute = map(int, end.split(':'))
-                    closes = day.replace(hour=hour, minute=minute, second=0, microsecond=0) - timedelta(minutes=5)
-                else:
-                    closes = begins + timedelta(hours=2)
-                slot = f'{day.date().isoformat()}-{kind}' + (f'-{start.replace(":", "")}' if kind == 'optimize' else '')
-                planned = max(begins, now)
-                if slot not in occupied and planned < closes and planned < datetime.fromisoformat(self.config['deadline']):
-                    if upcoming[kind] is None or planned < upcoming[kind]:
-                        upcoming[kind] = planned
+        # Probe the scheduler's own slot rules (relay slots, protections) over the next two days.
+        probe = now.replace(minute=now.minute - now.minute % 5, second=0, microsecond=0)
+        while probe < now + timedelta(days=2) and None in upcoming.values():
+            slot = select_slot(self.config, probe, occupied.__contains__)
+            if slot and slot[1] in upcoming and upcoming[slot[1]] is None and slot[0] not in occupied:
+                upcoming[slot[1]] = max(probe, now)
+            probe += timedelta(minutes=5)
         queued = sum(job['state'] == 'queued' for job in jobs)
         blocked = sum(job['state'] == 'blocked' for job in jobs)
         active = sum(job['state'] in ACTIVE for job in jobs)
@@ -831,7 +821,7 @@ class ReadModel:
                        else '到配置的上传窗口会检查是否需要提交。')
             message = '当前任务正在执行，后续没有已排队任务。' + trigger
         else:
-            message = '当前没有排队任务。每个优化时段只创建一轮任务，本轮完成后等待下一时段，不会提前排满全天。'
+            message = '当前没有排队任务。每个优化槽位只创建一轮任务，排队中最多一项自动优化，不会提前排满全天。'
         reservations = usage.get('reservations', [])
         def available(kind):
             if usage.get('available') is None:

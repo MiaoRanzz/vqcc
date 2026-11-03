@@ -1,9 +1,17 @@
-# Daily public-code comparison
+# Public-code comparison
 
-During the first available optimization run each Asia/Shanghai day, inspect new
-or changed public methods that could improve our current per-task bests. Resume
-an unfinished scan within the existing run budget. The aim is a better starting
-point or a useful next experiment.
+Public methods produced most measured gains so far (W44: 6.05x of 10.9x). Check
+them in two depths:
+
+- **Every optimization run, first:** a quick incremental check. From the saved
+  cursor, list Code-page entries new or re-versioned since the last check
+  (score-descending, first pages). Record the cursor and any newly observed public
+  per-task cost with `search.py frontier TASK --cost C --source REF --basis
+  claimed|local_official` (`local_official` after our own full verification).
+  Queue promising sources for reproduction ahead of local micro-tuning.
+- **First run each Asia/Shanghai day:** the full comparison below. Resume an
+  unfinished scan within the existing run budget. The aim is a better starting
+  point or a useful next experiment.
 
 ## Find promising methods
 
@@ -64,7 +72,9 @@ with its quota, reconciliation and next-day carryover rules.
 Use the existing files under the configured storage root:
 
 - `research/public-code/index.json`: latest attempt, successful scan day,
-  source/version history and unfinished work.
+  incremental cursor, source/version history and unfinished work.
+- `research/frontier.json` (via `search.py frontier`): best known public cost per
+  task with source, basis and history; feeds `plan`'s `allocation`.
 - `research/public-code/scans/<YYYY-MM-DD>/<run_id>.json`: scope, sources,
   comparison decisions and next actions.
 - Candidate code/source records: exact recipe, dependencies, adaptations and
