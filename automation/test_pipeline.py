@@ -1,5 +1,7 @@
 """Behavioral safety tests. Fake reports exercise bookkeeping, not scientific acceptance."""
 import json
+from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 import tempfile
 import subprocess
@@ -7,8 +9,9 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from pipeline import Pipeline, PipelineError, artifact_manifest, check_report, improvement, positive, safe_receipt, sha256, write_json
+from pipeline import Pipeline, PipelineError, artifact_manifest, check_report, improvement, positive, read_json, safe_receipt, sha256, write_json
 import pipeline as pipeline_module
+from submission_policy import submission_allowance, submission_windows
 
 
 class PipelineTests(unittest.TestCase):
@@ -65,6 +68,158 @@ class PipelineTests(unittest.TestCase):
         self.pipeline.promote(cid)
         return self.pipeline.prepare()
 
+    def unsubmitted_evidence(self):
+        self.pipeline.config.update(competition="test-competition", submission_policy="after_optimization",
+                                    max_daily_submissions=5, submission_quota_timezone="UTC")
+        clock = patch.object(self.pipeline, "now", return_value=datetime.fromisoformat("2026-10-30T16:30:00+08:00"))
+        now = clock.start()
+        self.addCleanup(clock.stop)
+        item = self.improved_package()
+        self.pipeline.reserve(item["token"])
+        self.pipeline.record(item["token"], self.receipt({"state": "upload_unconfirmed"}))
+        run_id = "20261030T162900-submit-test"
+        directory = self.pipeline.storage / "runs" / run_id
+        directory.mkdir(parents=True)
+        documents = {
+            "context": {"mode": "submit", "run_id": run_id, "job_id": "submit-job"},
+            "result": {"mode": "submit", "run_id": run_id, "job_id": "submit-job", "status": "completed",
+                       "started_at": "2026-10-30T16:29:00+08:00", "finished_at": "2026-10-30T16:32:00+08:00"},
+            "checkpoint": {"token": item["token"], "archive_sha256": item["archive_sha256"],
+                           "failure_observation": {"token": item["token"], "stage": "upload_bytes",
+                                                   "at": "2026-10-30T16:31:00+08:00", "error_type": "ConnectionError"}},
+            "prepared": item,
+            "preflight": {"competition": "test-competition", "account": "test-account", "team": "test-team",
+                          "complete": True, "submissions": [{"ref": 10}]},
+            "history": {"competition": "test-competition", "checked_at": "2026-10-30T16:59:00+08:00",
+                        "complete": True, "pages": 1, "limits": {"numTotal": 1, "numToday": 1, "numAllowedNow": 4},
+                        "submissions": [{"ref": 10, "date": "2026-10-30T16:00:00+08:00", "description": "prior accepted submission",
+                                         "teamName": "test-team", "submittedByRef": "test-account", "totalBytes": 1}]},
+        }
+        names = {"context": "context.json", "result": "result.json", "checkpoint": "checkpoint.json",
+                 "prepared": "prepared.json", "preflight": "preupload-preflight.json", "history": "remote-history.json"}
+        files = {}
+        for name, value in documents.items():
+            path = directory / names[name]
+            write_json(path, value)
+            files[name] = {"path": str(path), "sha256": sha256(path)}
+        script = directory / "submit_reserved.py"
+        script.write_text("""import sys
+stage = 'preflight'
+try:
+    stage = 'upload_bytes'
+    result = transfer.put('blob')
+    stage = 'create_submission'
+    submitted = api.create_submission(request)
+except BaseException as error:
+    sys.exit(1)
+""")
+        files["script"] = {"path": str(script), "sha256": sha256(script)}
+        proof = {"schema_version": 1, "token": item["token"], "archive_sha256": item["archive_sha256"],
+                 "submit_run_id": run_id, "files": files}
+        path = directory / "resolution-evidence.json"
+        write_json(path, proof)
+        now.return_value = datetime.fromisoformat("2026-10-30T17:00:00+08:00")
+        return item, path, proof
+
+    def test_proven_unsubmitted_resolution_preserves_quota_dedup_and_evidence(self):
+        item, path, proof = self.unsubmitted_evidence()
+        result = self.pipeline.resolve_unsubmitted(item["token"], path)
+        self.assertEqual(result["status"], "not_submitted")
+        self.assertEqual(result["receipt"], {"state": "upload_unconfirmed"})
+        self.assertEqual(result["resolution"]["files"], proof["files"])
+        self.assertTrue(result["resolution"]["quota_reservation_retained"])
+        self.assertEqual(result["resolution"]["blob_receipt"], "unknown")
+        self.assertEqual(result["events"][0]["status"], "upload_started")
+        self.assertEqual(result["events"][-1]["status"], "not_submitted")
+        again = self.pipeline.resolve_unsubmitted(item["token"], path)
+        self.assertEqual(len(again["events"]), len(result["events"]))
+        self.assertEqual(self.pipeline.prepare()["reason"], "already_attempted_candidate")
+        allowance = pipeline_module.submission_allowance(self.pipeline.status(), self.pipeline.config, self.pipeline.now())
+        self.assertEqual(allowance["attempts_today"], 1)
+        self.assertEqual(allowance["remaining_today"], 4)
+        self.assertEqual(self.pipeline.status()["last_submitted_costs"], self.old_costs)
+        with self.assertRaisesRegex(PipelineError, "cannot erase"):
+            self.pipeline.record(item["token"], self.receipt({"state": "upload_unconfirmed"}))
+        self.pipeline.promote(self.fixture("invsqrt", 70))
+        self.assertEqual(self.pipeline.prepare()["status"], "prepared")
+
+    def test_unsubmitted_resolution_rejects_incomplete_or_conflicting_proof(self):
+        item, path, proof = self.unsubmitted_evidence()
+        originals = {name: read_json(entry["path"]) for name, entry in proof["files"].items() if name != "script"}
+        cases = [
+            ("checkpoint", lambda value: value["failure_observation"].update(stage="create_submission")),
+            ("checkpoint", lambda value: value.update(submission_id=99)),
+            ("result", lambda value: value.update(status="running")),
+            ("result", lambda value: value.update(job_id="unrelated-job")),
+            ("history", lambda value: value.update(complete=False)),
+            ("history", lambda value: value.update(checked_at="2026-10-30T16:31:00+08:00")),
+            ("history", lambda value: value.update(checked_at="2026-10-30T17:01:00+08:00")),
+            ("history", lambda value: value.update(competition="another-competition")),
+            ("history", lambda value: value["limits"].update(numToday=0)),
+            ("history", lambda value: value["limits"].update(numTotal=2)),
+            ("history", lambda value: value["submissions"][0].update(teamName="another-team")),
+            ("history", lambda value: value["submissions"][0].update(description=item["token"])),
+            ("prepared", lambda value: value.update(archive_sha256="0" * 64)),
+        ]
+        for name, mutate in cases:
+            with self.subTest(name=name, change=cases.index((name, mutate))):
+                modified = deepcopy(originals[name])
+                mutate(modified)
+                file = proof["files"][name]["path"]
+                write_json(file, modified)
+                proof["files"][name]["sha256"] = sha256(file)
+                write_json(path, proof)
+                with self.assertRaises(PipelineError):
+                    self.pipeline.resolve_unsubmitted(item["token"], path)
+                self.assertEqual(self.pipeline.status()["submissions"][item["token"]]["status"], "upload_started")
+                write_json(file, originals[name])
+                proof["files"][name]["sha256"] = sha256(file)
+
+    def test_daily_success_limit_allows_three_ids_after_confirmed_upload_failure(self):
+        failed, proof, _ = self.unsubmitted_evidence()
+        self.pipeline.config.update(max_daily_submissions=3, submission_quota_basis='successful_submissions')
+        resolved = self.pipeline.resolve_unsubmitted(failed['token'], proof)
+        self.assertTrue(resolved['resolution']['attempt_record_retained'])
+        self.assertFalse(resolved['resolution']['quota_reservation_retained'])
+        for index, cost in enumerate((70, 60, 50)):
+            self.pipeline.promote(self.fixture('invsqrt', cost))
+            prepared = self.pipeline.prepare()
+            self.pipeline.reserve(prepared['token'])
+            quota = submission_allowance(self.pipeline.status(), self.pipeline.config, self.pipeline.now())
+            self.assertEqual(quota['successes_today'], index)
+            self.assertEqual(quota['remaining_today'], 3 - index)
+            self.assertEqual(self.pipeline.prepare()['reason'], 'previous_submission_needs_reconciliation')
+            recorded = self.pipeline.record(prepared['token'], self.receipt({'ref': 800 + index}))
+            self.assertEqual(recorded['accepted_at'], self.pipeline.now_string())
+            self.pipeline.record(prepared['token'], self.receipt({'ref': 800 + index}))
+        quota = submission_allowance(self.pipeline.status(), self.pipeline.config, self.pipeline.now())
+        self.assertEqual(quota['attempts_today'], 4)
+        self.assertEqual(quota['successes_today'], 3)
+        self.assertEqual(quota['remaining_today'], 0)
+        self.pipeline.promote(self.fixture('invsqrt', 40))
+        self.assertEqual(self.pipeline.prepare()['reason'], 'daily_submission_limit_reached')
+
+    def test_unsubmitted_resolution_rejects_hash_drift_or_changed_uploader(self):
+        item, path, proof = self.unsubmitted_evidence()
+        script = Path(proof["files"]["script"]["path"])
+        original = script.read_text()
+        script.write_text(original + "# changed\n")
+        with self.assertRaisesRegex(PipelineError, "hash mismatch"):
+            self.pipeline.resolve_unsubmitted(item["token"], path)
+        script.write_text(original.replace("sys.exit(1)", "pass"))
+        proof["files"]["script"]["sha256"] = sha256(script)
+        write_json(path, proof)
+        with self.assertRaisesRegex(PipelineError, "control flow"):
+            self.pipeline.resolve_unsubmitted(item["token"], path)
+        self.assertEqual(self.pipeline.status()["submissions"][item["token"]]["status"], "upload_started")
+
+    def test_unsubmitted_resolution_cannot_override_known_submission_id(self):
+        item, path, _ = self.unsubmitted_evidence()
+        self.pipeline.record(item["token"], self.receipt({"ref": 99}))
+        with self.assertRaisesRegex(PipelineError, "without a known submission ID"):
+            self.pipeline.resolve_unsubmitted(item["token"], path)
+        self.assertEqual(self.pipeline.status()["submissions"][item["token"]]["submission_id"], 99)
+
     def test_geometric_improvement_and_bad_costs(self):
         self.assertAlmostEqual(improvement(self.old_costs, {"dqi": 50, "invsqrt": 100, "dfthcsos": 100}), 2 ** (1 / 3))
         for value in (float("nan"), float("inf"), 0, -1, True, None):
@@ -74,6 +229,145 @@ class PipelineTests(unittest.TestCase):
     def test_no_improvement_skips_without_archive(self):
         self.assertEqual(self.pipeline.prepare()["reason"], "no_improvement")
         self.assertFalse((self.pipeline.storage / "submissions").exists())
+
+    def test_after_optimization_allows_five_improvements_outside_old_window(self):
+        self.pipeline.config.update(submission_policy='after_optimization', max_daily_submissions=5,
+                                    submission_quota_timezone='UTC', daily_submission_time='20:00', submit_window_minutes=45)
+        with patch.object(self.pipeline, 'now', return_value=datetime.fromisoformat('2026-10-30T10:00:00+08:00')):
+            for index, cost in enumerate((90, 80, 70, 60, 50)):
+                self.pipeline.promote(self.fixture('invsqrt', cost))
+                prepared = self.pipeline.prepare()
+                reserved = self.pipeline.reserve(prepared['token'])
+                self.assertEqual(reserved['quota_date'], '2026-10-30')
+                self.pipeline.record(prepared['token'], self.receipt({'ref': 1000 + index}))
+            self.pipeline.promote(self.fixture('invsqrt', 40))
+            self.assertEqual(self.pipeline.prepare()['reason'], 'daily_submission_limit_reached')
+        # Beijing midnight does not reset Kaggle's UTC-day allowance.
+        with patch.object(self.pipeline, 'now', return_value=datetime.fromisoformat('2026-10-31T00:01:00+08:00')):
+            self.assertEqual(self.pipeline.prepare()['reason'], 'daily_submission_limit_reached')
+        with patch.object(self.pipeline, 'now', return_value=datetime.fromisoformat('2026-10-31T08:01:00+08:00')):
+            self.assertEqual(self.pipeline.prepare()['status'], 'prepared')
+
+    def test_after_optimization_unknown_upload_blocks_and_rejected_candidate_not_retried(self):
+        self.pipeline.config.update(submission_policy='after_optimization', max_daily_submissions=5,
+                                    submission_quota_timezone='UTC')
+        item = self.improved_package()
+        self.pipeline.reserve(item['token'])
+        self.assertEqual(self.pipeline.prepare()['reason'], 'previous_submission_needs_reconciliation')
+        self.pipeline.record(item['token'], self.receipt({'ref': 123, 'status': 'rejected'}))
+        self.assertEqual(self.pipeline.prepare()['reason'], 'already_attempted_candidate')
+        self.pipeline.promote(self.fixture('invsqrt', 70))
+        self.assertEqual(self.pipeline.prepare()['status'], 'prepared')
+
+    def test_after_optimization_reserves_at_current_quota_date(self):
+        self.pipeline.config.update(submission_policy='after_optimization', max_daily_submissions=5,
+                                    submission_quota_timezone='UTC')
+        with patch.object(self.pipeline, 'now', return_value=datetime.fromisoformat('2026-10-30T23:59:00+08:00')):
+            item = self.improved_package()
+        with patch.object(self.pipeline, 'now', return_value=datetime.fromisoformat('2026-10-31T08:01:00+08:00')):
+            reserved = self.pipeline.reserve(item['token'])
+            self.assertEqual(reserved['date'], '2026-10-30')
+            self.assertEqual(reserved['quota_date'], '2026-10-31')
+
+    def daily_windows(self):
+        self.pipeline.config.update(submission_policy='daily_windows',
+                                    daily_submission_times=['08:00', '20:00'],
+                                    max_daily_submissions=2, official_max_daily_submissions=5,
+                                    submission_quota_timezone='UTC', submit_window_minutes=45)
+
+    def test_daily_windows_allow_one_attempt_each_and_two_per_quota_day(self):
+        self.daily_windows()
+        with patch.object(self.pipeline, 'now', return_value=datetime.fromisoformat('2026-10-30T08:00:00+08:00')) as clock:
+            first = self.improved_package()
+            reserved = self.pipeline.reserve(first['token'])
+            self.assertEqual(reserved['window_id'], '2026-10-30T08:00:00+08:00')
+            self.assertEqual(reserved['quota_timezone'], 'UTC')
+            self.pipeline.record(first['token'], self.receipt({'ref': 101}))
+            self.pipeline.promote(self.fixture('invsqrt', 70))
+            self.assertEqual(self.pipeline.prepare()['reason'], 'already_attempted_window')
+            clock.return_value = datetime.fromisoformat('2026-10-30T20:00:00+08:00')
+            second = self.pipeline.prepare()
+            self.pipeline.reserve(second['token'])
+            self.pipeline.record(second['token'], self.receipt({'ref': 102}))
+            self.pipeline.promote(self.fixture('invsqrt', 60))
+            self.assertEqual(self.pipeline.prepare()['reason'], 'daily_submission_limit_reached')
+            clock.return_value = datetime.fromisoformat('2026-10-31T00:01:00+08:00')
+            self.assertEqual(self.pipeline.prepare()['reason'], 'daily_submission_limit_reached')
+            clock.return_value = datetime.fromisoformat('2026-10-31T08:00:00+08:00')
+            self.assertEqual(self.pipeline.reserve(self.pipeline.prepare()['token'])['quota_date'], '2026-10-31')
+
+    def test_daily_windows_reject_upload_outside_window_and_at_end(self):
+        self.daily_windows()
+        with patch.object(self.pipeline, 'now', return_value=datetime.fromisoformat('2026-10-30T07:59:59+08:00')) as clock:
+            item = self.improved_package()
+            for stamp in ('2026-10-30T07:59:59+08:00', '2026-10-30T08:45:00+08:00',
+                          '2026-10-30T19:59:59+08:00', '2026-10-30T20:45:00+08:00'):
+                clock.return_value = datetime.fromisoformat(stamp)
+                with self.assertRaisesRegex(PipelineError, 'submission window'):
+                    self.pipeline.reserve(item['token'])
+            clock.return_value = datetime.fromisoformat('2026-10-30T20:44:59+08:00')
+            self.assertEqual(self.pipeline.reserve(item['token'])['window_id'], '2026-10-30T20:00:00+08:00')
+
+    def test_daily_windows_preserve_unknown_and_candidate_dedup_between_windows(self):
+        self.daily_windows()
+        with patch.object(self.pipeline, 'now', return_value=datetime.fromisoformat('2026-10-30T08:00:00+08:00')) as clock:
+            item = self.improved_package()
+            self.pipeline.reserve(item['token'])
+            clock.return_value = datetime.fromisoformat('2026-10-30T20:00:00+08:00')
+            self.assertEqual(self.pipeline.prepare()['reason'], 'previous_submission_needs_reconciliation')
+            self.pipeline.record(item['token'], self.receipt({'ref': 101, 'status': 'rejected'}))
+            self.assertEqual(self.pipeline.prepare()['reason'], 'already_attempted_candidate')
+            self.pipeline.promote(self.fixture('invsqrt', 70))
+            self.assertEqual(self.pipeline.prepare()['status'], 'prepared')
+
+    def test_daily_windows_count_prior_policy_attempts_without_resetting_history(self):
+        self.daily_windows()
+        now = datetime.fromisoformat('2026-10-30T08:10:00+08:00')
+        historical = {'status': 'not_submitted', 'submission_policy': 'after_optimization',
+                      'date': '2026-10-29', 'quota_date': '2026-10-30', 'quota_timezone': 'UTC',
+                      'reserved_at': '2026-10-30T08:02:00+08:00'}
+        with self.pipeline.locked():
+            self.pipeline.state['submissions']['old-attempt'] = historical
+            self.pipeline.save()
+        with patch.object(self.pipeline, 'now', return_value=now):
+            self.assertEqual(self.pipeline.prepare()['reason'], 'already_attempted_window')
+        allowance = submission_allowance(self.pipeline.state, self.pipeline.config, now)
+        self.assertEqual(allowance['attempts_today'], 1)
+        self.assertEqual(allowance['window_attempts'], 1)
+        self.assertEqual(allowance['remaining_today'], 1)
+        # A second attempt from the old policy consumes the new, lower limit too.
+        with self.pipeline.locked():
+            self.pipeline.state['submissions']['old-attempt-two'] = {**historical, 'reserved_at': '2026-10-30T12:00:00+08:00'}
+            self.pipeline.save()
+        with patch.object(self.pipeline, 'now', return_value=datetime.fromisoformat('2026-10-30T20:00:00+08:00')):
+            self.assertEqual(self.pipeline.prepare()['reason'], 'daily_submission_limit_reached')
+
+    def test_daily_windows_next_window_tracks_morning_evening_and_deadline(self):
+        self.daily_windows()
+        for stamp, expected in [('2026-10-30T07:59:00+08:00', '2026-10-30T08:00:00+08:00'),
+                                ('2026-10-30T08:45:00+08:00', '2026-10-30T20:00:00+08:00'),
+                                ('2026-10-30T20:45:00+08:00', '2026-10-31T08:00:00+08:00')]:
+            now = datetime.fromisoformat(stamp)
+            self.assertEqual(submission_allowance(self.pipeline.state, self.pipeline.config, now)['next_window'], expected)
+        self.pipeline.config['deadline'] = '2026-10-31T07:59:00+08:00'
+        allowance = submission_allowance(self.pipeline.state, self.pipeline.config, datetime.fromisoformat('2026-10-30T20:45:00+08:00'))
+        self.assertIsNone(allowance['next_window'])
+        with self.assertRaises(ValueError):
+            submission_windows({**self.pipeline.config, 'daily_submission_times': ['08:00', '08:10']}, now)
+
+    def test_resolution_uses_official_quota_instead_of_lower_local_limit(self):
+        item, path, _ = self.unsubmitted_evidence()
+        self.daily_windows()
+        resolved = self.pipeline.resolve_unsubmitted(item['token'], path)
+        self.assertEqual(resolved['status'], 'not_submitted')
+        allowance = pipeline_module.submission_allowance(self.pipeline.status(), self.pipeline.config, self.pipeline.now())
+        self.assertEqual(allowance['daily_limit'], 2)
+        self.assertEqual(allowance['attempts_today'], 1)
+        self.assertEqual(allowance['remaining_today'], 1)
+        # An omitted official setting keeps the platform default of five;
+        # the smaller local allowance must not be used to reject its history.
+        self.pipeline.config.pop('official_max_daily_submissions')
+        self.assertEqual(self.pipeline.resolve_unsubmitted(item['token'], path)['status'], 'not_submitted')
 
     def test_tampered_artifact_cannot_be_promoted(self):
         cid = self.fixture("invsqrt", 80)
@@ -122,6 +416,14 @@ class PipelineTests(unittest.TestCase):
         self.pipeline.promote(cid)
         self.assertEqual(self.pipeline.prepare()["status"], "prepared")
 
+    def test_new_best_invalidates_prepared_preview(self):
+        item = self.improved_package()
+        self.pipeline.promote(self.fixture("invsqrt", 70))
+        with self.assertRaisesRegex(PipelineError, "Best candidates changed"):
+            self.pipeline.reserve(item["token"])
+        current = self.pipeline.prepare()
+        self.assertEqual(self.pipeline.reserve(current["token"])["costs"]["invsqrt"], 70)
+
     def test_metadata_cannot_be_claimed_scored(self):
         item = self.improved_package()
         self.pipeline.reserve(item["token"])
@@ -135,6 +437,16 @@ class PipelineTests(unittest.TestCase):
     def test_secret_fields_never_persist(self):
         result = safe_receipt({"structuredContent": {"ref": 123, "token": "secret", "url": "https://signed.example", "status": "pending"}})
         self.assertEqual(result, {"ref": 123, "status": "pending"})
+
+    def test_snake_case_kaggle_score_is_recorded(self):
+        item = self.improved_package()
+        self.pipeline.reserve(item['token'])
+        receipt = {"ref": 123, "status": "COMPLETE", "public_score": "2.18204",
+                   "url": "https://example.com/private?token=secret"}
+        result = self.pipeline.record(item['token'], self.receipt(receipt))
+        self.assertEqual(result['status'], 'scored')
+        self.assertEqual(result['public_score'], 2.18204)
+        self.assertNotIn('url', result['receipt'])
 
     def test_candidate_paths_and_duplicate_angle_rejected(self):
         with self.assertRaises(PipelineError):

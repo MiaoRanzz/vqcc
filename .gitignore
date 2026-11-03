@@ -17,3 +17,11 @@ artifacts
 submission/*/kaggle_*.json
 submission/*/files/
 sample_submission/
+web/.python/
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/test-results/
+web/frontend/playwright-report/
+web/frontend/*.tsbuildinfo
+.seecode/
+diagrams/

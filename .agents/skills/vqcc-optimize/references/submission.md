@@ -1,84 +1,73 @@
-# Daily submission and reconciliation
+# Submit verified improvements and reconcile results
 
-Use the installed Kaggle MCP tools. Discover their current argument schemas;
-examples from a previous session are not a substitute for the live schema.
-Local durable decisions belong in `automation/pipeline.py`, whose `--help` is
-part of the executable interface. Keep signed upload URLs and credentials out
-of durable records, terminal output, reports, and Git.
+Use this reference in submit or reconcile mode. Authorization and external
+publication boundaries are in `AGENTS.md`; execution uses the existing runner,
+model budget, deadline and `automation/pipeline.py` ledger.
 
-## Preconditions
+## Policy and access
 
-1. The runner mode must authorize submission, the local date/window must permit
-   it, and the competition must remain open. Confirm live official metadata
-   when the recorded deadline or submission rules may have changed.
-2. Inspect current pipeline status and Kaggle recent submissions. Reconcile an
-   uncertain upload/submit outcome **without a known submission ID before**
-   preparing another. A known accepted ID with a missing score remains
-   `score_unknown`: it consumes that day's slot, but a new verified local
-   improvement may be submitted on a later day. Today may already contain
-   the user's manual submission; the quota applies to the whole account/team.
-   If the returned listing is incomplete or identity/date is uncertain, stop
-   the external action and report what could not be established.
-3. Ask the pipeline to prepare the combined incumbent. It must verify eligible
-   artifacts/evidence, a strict cost improvement, ZIP structure, and hashes.
-   Skip unchanged candidates. Record the selected component experiment IDs.
-4. Reserve the daily attempt in the ledger before requesting an upload URL.
-   Keep the reservation token, ZIP hash/size, account/team, and date associated
-   throughout the attempt. Recheck the exact archive before uploading.
+The current `daily_windows` policy checks for a fully verified improvement at
+08:00 and 20:00 Asia/Shanghai. Each window lasts 45 minutes and permits at most
+one upload attempt. On 2026-11-03 the user changed the local daily limit to three
+successful submissions per UTC day: count distinct valid positive Kaggle IDs,
+regardless of grading status. Failed uploads without an ID retain their attempt
+history but do not consume the daily success limit. The windows established on
+2026-10-30 still supersede immediate submission after optimization.
+Separately check the official limit of five
+submissions per UTC day, including manual/team submissions.
 
-## External sequence
+Carry unsubmitted gains to the next scheduled window, including across the
+08:00 Asia/Shanghai quota reset. No new optimization is required. Prepare the
+**current** best at execution, including improvements made while waiting; retain
+the existing pause, deadline and model-budget controls. Skip windows with no
+eligible improvement rather than uploading an unchanged combination.
 
-- Use `start_competition_submission_upload` for the reserved ZIP, then perform
-  the upload exactly as the returned protocol specifies. Never guess HTTP
-  method, headers, or content-type. Pass any signed URL in process memory or a
-  temporary file outside source control; never interpolate it into printed
-  command text or retain it in an artifact report.
-- The reservation already records `upload_started`. If a nonsecret upload
-  acknowledgement is available, preserve it through `record TOKEN --receipt FILE`
-  without inventing a terminal status. Then call the live competition-submission
-  tool using returned upload handles.
-  A missing tool or required argument is a reported blocker, not a reason to
-  switch accounts, use a different competition, or invent a success result.
-- Immediately record the returned submission ID and sanitized receipt. The
-  point of reservation is to survive a crash between request and receipt.
-  Do not retry a submission call after a timeout until read-only reconciliation
-  establishes what happened. Do not clear an uncertain reservation to bypass
-  the one-attempt daily limit.
-- Fetch status by submission ID. Record actual remote status and score only
-  when available. The current MCP has previously returned upload metadata
-  without evaluation fields; this means `score_unknown`, not success or failure.
-  A platform-accepted upload and a local PASS are separate observations.
+Discover the installed Kaggle MCP interfaces. If unavailable or unauthenticated,
+use the installed official `kagglesdk` for the same account and competition:
+`KaggleClient().competitions.competition_api_client`. The runner supplies
+`KAGGLE_API_TOKEN` from the existing credential; outside it, use the existing
+`~/.kaggle/access_token` without exposing its value. Inspect the installed request
+types and upload protocol. Authentication diagnosis should reflect current
+responses, not a past incident. Keep credentials and signed URLs out of logs,
+reports and Git.
 
-## Reconcile mode
+## Submit
 
-Read recent submissions and the known ID without mutating Kaggle. Match against
-competition, account/team, timestamp, description/run ID, and artifact metadata
-where available. Record confidence and unresolved ambiguity. An ambiguous
-upload remains blocked from another automatic attempt. Preserve raw sanitized
-receipts so later API changes can recover omitted fields.
+1. Read pipeline status and the full current UTC day's remote team submission
+   history. Confirm quota, deadline and identity; an incomplete history cannot
+   establish an available slot. Check current official rules if they may have
+   changed. Resolve an uncertain upload/submit outcome without a known ID first.
+2. Run `prepare` to select the current verified best, check its evidence and ZIP,
+   and skip unchanged, already-attempted or ineligible combinations. Record the
+   selected candidate IDs and archive hash.
+3. Run `reserve TOKEN` immediately before any upload request. It records the
+   durable attempt and `upload_started` status. Upload the exact reserved bytes
+   using the live tool/SDK protocol (`start_submission_upload` in the SDK), then
+   create the submission with the returned handles. Keep signed URLs in memory
+   or a temporary file outside source control.
+4. Immediately `record` the returned submission ID and sanitized receipt. An
+   upload acknowledgement can also be recorded without inventing a final status.
+   A timeout with an uncertain outcome goes to reconciliation before retrying.
+5. Fetch evaluation status. A known accepted ID without a score is
+   `score_unknown`: it consumes quota but allows a different verified improvement
+   while slots remain. Only an actual platform result establishes score/rank.
 
-Poll with bounded intervals and within the runner budget. Official guidance
-estimates about 45 minutes for grading; do not hold the daily optimization lock
-indefinitely. The next reconcile run can finish status collection. A documented
-remote rejection can be recorded, but it does not authorize another submission
-that day. A new day still requires resolving uncertain previous upload/submit outcomes
-without a known submission ID; missing evaluation fields alone do not freeze
-all later submissions.
+## Reconcile
 
-## Reports and public materials
+Use read-only Kaggle queries for known IDs and recent submissions. Match by
+competition, account/team, timestamp, description/run ID and available artifact
+metadata; retain ambiguity when those cannot resolve the attempt. Save sanitized
+receipts through the pipeline. Uncertain attempts without an ID block another
+upload; a known ID with pending grading does not.
 
-Report local per-task costs, selected archive hash, submitted ID, remote status,
-remote score if known, and skip/block reasons. Do not infer the user's leaderboard
-rank from local costs. Fetch the real leaderboard when available.
+Bound polling by the run budget and leave pending grading to a later reconcile
+run. Record an observed rejection; the same rejected combination is not retried
+automatically. Report selected components, local costs, archive hash, submission
+ID, observed platform result and any skip or unresolved outcome in Chinese.
 
-Public notebook/dataset publishing, messages, and final-selection changes are
-outside routine submission authorization. Prepare exact reviewable materials
-and ask the user before those actions. Never turn a public milestone requirement
-into blanket permission to publish the repository or credentials.
+## CLI
 
-## Local CLI sequence
-
-Resolve the configured Python interpreter first. The current interface is:
+Run with the resolved vqcc interpreter; consult subcommand help as needed:
 
 ```text
 automation/pipeline.py [--config PATH] status
@@ -88,8 +77,6 @@ automation/pipeline.py [--config PATH] record TOKEN --receipt FILE --submission-
 automation/pipeline.py [--config PATH] reconcile TOKEN --receipt FILE --status scored --score SCORE
 ```
 
-`prepare` either reports a skip or returns the prepared token and ZIP path.
-`reserve` creates the durable pre-network intent. `record` ingests sanitized
-external evidence; choose the actual observed status, not the illustrative one
-above. Consult each subcommand's `--help` for required fields and later interface
-changes. Never use a manually supplied score without a corresponding receipt.
+Use the status and score evidenced by the receipt; the last two lines illustrate
+possible outcomes. Public releases, messages, team changes and final selections
+still require the concrete user review described in `AGENTS.md`.

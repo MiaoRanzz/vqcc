@@ -38,8 +38,11 @@ def main():
     storage = Path(cfg['storage_root'])
     runtime = storage / 'runtime'
     command = [str(ROOT / 'automation/launch.sh'), '--config', str(args.config.resolve()), 'daemon']
+    policy = cfg.get('submission_policy', 'daily_window')
+    submit_at = (None if policy == 'after_optimization' else
+                 cfg['daily_submission_times'] if policy == 'daily_windows' else cfg['daily_submission_time'])
     if not args.install and not args.remove:
-        print(json.dumps({'command': command, 'timezone': cfg['timezone'], 'optimize_windows': cfg['optimize_windows'], 'submit_at': cfg['daily_submission_time'], 'reconcile_at': cfg['reconcile_time'], 'system_services_changed': False}, indent=2))
+        print(json.dumps({'command': command, 'timezone': cfg['timezone'], 'optimize_windows': cfg['optimize_windows'], 'submission_policy': policy, 'max_daily_submissions': cfg.get('max_daily_submissions', 1), 'submit_at': submit_at, 'reconcile_at': cfg['reconcile_time'], 'system_services_changed': False}, indent=2))
         return
     if not storage.is_dir():
         raise RuntimeError('Provision the approved data directory first')
@@ -63,7 +66,7 @@ def main():
     if transport:
         write_json(runtime / 'transport-env.json', transport)
         (runtime / 'transport-env.json').chmod(0o600)
-    result = {'status': 'installed', 'project_root': str(ROOT), 'storage': str(storage), 'command': command, 'timezone': cfg['timezone'], 'submission_time': cfg['daily_submission_time'], 'system_services_changed': False, 'restart_note': 'This container has no init service. After a container restart, verify the mount/auth and run install_schedule.py --install --start again.'}
+    result = {'status': 'installed', 'project_root': str(ROOT), 'storage': str(storage), 'command': command, 'timezone': cfg['timezone'], 'submission_policy': policy, 'max_daily_submissions': cfg.get('max_daily_submissions', 1), 'submission_time': submit_at, 'system_services_changed': False, 'restart_note': 'This container has no init service. After a container restart, verify the mount/auth and run install_schedule.py --install --start again.'}
     write_json(runtime / 'schedule.json', result)
     if args.start and previous is None:
         env = os.environ.copy()

@@ -1,24 +1,41 @@
-Use the repository's $vqcc-optimize skill in submit mode. The user has authorized
-one improved verified Kaggle ZIP submission per Asia/Shanghai day at the 20:00
-window for google-verifiable-quantum-circuit-compilation; no routine approval is
-needed. This run does not authorize publishing notebooks/data, messaging others,
-changing the team, or changing final selections.
+Use the repository's $vqcc-optimize skill in submit mode. Read AGENTS.md, the
+appended runner context and references/submission.md, then execute its submission
+sequence through automation/pipeline.py and the available Kaggle interface.
 
-Read the runner runtime context, AGENTS.md, pipeline status, and the skill's
-references/submission.md. Verify deadline, today's remote submission history,
-and local attempt ledger before external writes. A known accepted submission ID
-with no score is score_unknown and consumes its date's slot; on later days it
-need not prevent a new verified improvement. An uncertain upload/submit outcome
-without an ID must be reconciled before another external attempt.
+The user authorized new fully verified improvements without routine approval.
+The current daily_windows policy allows one upload attempt in each 45-minute
+window starting at 08:00 and 20:00 Asia/Shanghai, with at most three successful
+submissions per UTC day. Count distinct valid positive Kaggle submission IDs,
+including pending grading; failed uploads without an ID do not consume this
+daily success quota. Preserve every attempt and the one-attempt-per-window rule.
+Check the full current UTC day's remote team history
+against the separate official five-submission limit. Pending gains carry to the
+next scheduled window, including after the 08:00 Asia/Shanghai quota reset;
+prepare the current best at execution without waiting for a new optimization.
+Skip if there is no eligible improvement or the current window has been used.
 
-Use automation/pipeline.py prepare; when no improvement is eligible, record the
-skip and finish. For a prepared ZIP, reserve TOKEN immediately before requesting
-an upload URL. Use the live Kaggle MCP tool schemas, upload the exact reserved
-bytes, then record the sanitized receipt and submission ID immediately. Never
-persist signed URLs or credentials or retry a timed-out submit blindly. Check
-platform status without claiming success from metadata alone; bounded follow-up
-can continue in reconcile mode.
+Use the existing account's official SDK fallback if MCP is unavailable or rejects
+authentication, following the reference's access instructions. Reserve before any
+upload request, upload the reserved bytes and immediately record the receipt/ID.
+Keep the live upload session URL in memory until the transfer outcome is known.
+For a transient byte-transfer interruption, use the installed official resumable
+upload protocol to probe that same session and send only the confirmed remaining
+bytes, within explicit time/attempt limits. HTTP 308 without Range means offset 0;
+200/201 confirms completion. The successful run
+runs/20261030T123800-submit-bde244/upload_reserved.py is a local reference; inspect
+the installed official implementation for protocol details. Never log signed URLs
+or raw request exceptions, request a second session to hide uncertainty, or blindly
+replay create_submission. Resume only the same reserved artifact and session.
+Reconcile an uncertain outcome without an ID before another attempt. A known ID
+with score_unknown consumes quota but does not block a new eligible combination.
 
-Report in Chinese: selected component IDs and local costs, archive hash,
-submission ID if known, actual platform status/score if present, and any
-skip/block reason. Finish within the appended runtime deadline.
+If an upload fails or ends without a submission ID, preserve the reserved attempt
+and save sanitized failure evidence. Record only the status supported by a platform
+receipt; a connection failure with an uncertain outcome remains upload_started,
+not an invented platform rejection. The existing queue automatically schedules
+one read-only reconciliation per upload token after this run ends. Do not create
+another reconciliation loop or start a new upload attempt after an unknown outcome.
+
+Finish within the runner deadline with a concise Chinese report: component IDs,
+local costs, archive hash, submission ID, observed result or skip reason. Public
+releases, messages, team changes and final selections retain their review gate.

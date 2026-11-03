@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 from datetime import datetime, timezone
 import fcntl
 import hashlib
+import heapq
 import importlib.metadata
 import json
 import math
@@ -24,10 +26,15 @@ import uuid
 import zipfile
 from zoneinfo import ZoneInfo
 
+try:
+    from .submission_policy import after_optimization, submission_allowance, submission_skip_reason
+except ImportError:
+    from submission_policy import after_optimization, submission_allowance, submission_skip_reason
+
 TASKS = ("dqi", "invsqrt", "dfthcsos")
 VERIFIERS = {"dqi": "verifiers/dqi/verify_submission_dqi.py", "invsqrt": "verifiers/invsqrt/verify_submission_invsqrt.py", "dfthcsos": "verifiers/dfthcsos/verify.py"}
 INFLIGHT = {"upload_started", "submitted", "score_unknown"}
-ATTEMPTED = INFLIGHT | {"scored", "rejected"}
+ATTEMPTED = INFLIGHT | {"scored", "rejected", "not_submitted"}
 
 
 class PipelineError(RuntimeError):
@@ -129,10 +136,12 @@ def check_report(task, report, manifest):
 def safe_receipt(value):
     """Keep only result fields, never signed URLs, upload tokens, headers or credentials."""
     allowed = {"ref", "submissionId", "id", "status", "state", "publicScore", "privateScore", "score", "date", "submittedAt", "createdAt", "errorDescription"}
+    aliases = {"public_score": "publicScore", "private_score": "privateScore", "submission_id": "submissionId"}
     found = {}
     def visit(obj):
         if isinstance(obj, dict):
             for key, val in obj.items():
+                key = aliases.get(key, key)
                 if key in allowed and isinstance(val, (str, int, float, bool)):
                     if isinstance(val, str) and ("http" in val.lower() or len(val) > 1000):
                         continue
@@ -252,6 +261,12 @@ class Pipeline:
         verification = data.get("verification")
         if not verification or verification.get("kind") not in ("official", "imported_official"):
             raise PipelineError(f"Candidate {candidate_id} lacks official full verification")
+        report = self._attested_report(path, data, verification)
+        check_report(data["task"], report, verification["artifacts"])
+        return path, data, report
+
+    def _attested_report(self, path, data, verification):
+        """Check exact provenance for a completed official PASS or FAIL report."""
         manifest = artifact_manifest(path / "output", data["task"])
         if manifest != verification["artifacts"]:
             raise PipelineError("Artifact changed after verification")
@@ -274,9 +289,7 @@ class Pipeline:
         report_path = path / verification["report"]
         if sha256(report_path) != verification["report_sha256"]:
             raise PipelineError("Verification report changed after attestation")
-        report = read_json(report_path)
-        check_report(data["task"], report, manifest)
-        return path, data, report
+        return read_json(report_path)
 
     def init(self, baseline):
         baseline = Path(baseline).resolve()
@@ -345,15 +358,91 @@ class Pipeline:
             self.save()
             return {"status": "initialized", "best": self.state["best"], "platform_score": None, "existing_submission_id": 57763974}
 
-    def create(self, task, hypothesis, source, license_info, parent=None):
+    def top_candidates(self, task, limit=3):
+        """Rank distinct artifacts, checking exact evidence for selected parents.
+
+        Call under locked(). Cheap report screening avoids hashing every historical
+        circuit; selected parents still pass verified(), without rerunning science.
+        Identical artifacts use their earliest attestation, never the luckiest score.
+        """
+        if task not in TASKS or not 1 <= limit <= 3:
+            raise PipelineError("Top candidate selection requires a task and limit 1..3")
+        groups, excluded = {}, []
+        for metadata in sorted((self.storage / "experiments").glob("*/candidate.json")):
+            cid = metadata.parent.name
+            try:
+                path, data = self.candidate(cid)
+                if data["task"] != task:
+                    continue
+                record = data.get("verification") or {}
+                if record.get("kind") not in ("official", "imported_official"):
+                    continue
+                relative = Path(record["report"])
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise PipelineError("Unsafe verification report path")
+                report_path = path / relative
+                if sha256(report_path) != record["report_sha256"]:
+                    raise PipelineError("Verification report changed after attestation")
+                report = read_json(report_path)
+                check_report(task, report, record["artifacts"])
+                signature = tuple(sorted((entry["path"], entry["sha256"]) for entry in record["artifacts"]))
+                groups.setdefault(signature, []).append((data.get("created_at", ""), cid, positive(report["score"])))
+            except (PipelineError, OSError, ValueError, KeyError, TypeError) as error:
+                excluded.append({"id": cid, "reason": str(error)})
+        ranked = []
+        for signature, copies in groups.items():
+            # Timestamp ties use the conservative score, not an ID/hash lottery.
+            copies.sort(key=lambda item: (item[0], -item[2], item[1]))
+            created, cid, _ = copies[0]
+            # A bound only: a stale early copy may hide a cheaper valid copy.
+            ranked.append((min(item[2] for item in copies), created, cid, False, signature))
+        heapq.heapify(ranked)
+        selected, checked = [], {}
+        while ranked and len(selected) < limit:
+            _, _, _, ready, signature = heapq.heappop(ranked)
+            if ready:
+                selected.append({"rank": len(selected) + 1, **checked[signature]})
+                continue
+            for created, cid, _ in groups[signature]:
+                try:
+                    path, data, report = self.verified(cid)
+                    break
+                except (PipelineError, OSError, ValueError, KeyError, TypeError) as error:
+                    excluded.append({"id": cid, "reason": str(error)})
+            else:
+                continue
+            checked[signature] = {
+                "id": cid, "task": task,
+                "cost": positive(report["score"]), "output": str(path / "output"),
+                "generation": str(path / "generation.json"), "code": str(path / "code"),
+                "source_snapshot": data["verification"].get("source"),
+                "artifacts": data["verification"]["artifacts"],
+                "report": data["verification"]["report"],
+                "report_sha256": data["verification"]["report_sha256"],
+                "equivalent_candidates": [item[1] for item in sorted(groups[signature]) if item[1] != cid],
+            }
+            heapq.heappush(ranked, (positive(report["score"]), created, cid, True, signature))
+        return {"task": task, "requested": limit, "candidates": selected, "excluded": excluded}
+
+    def create(self, task, hypothesis, source, license_info, parent=None, parents=None):
         self.active()
         with self.locked():
             self.disk_check()
+            if parents is not None:
+                parents = list(dict.fromkeys(parents))
+                if not parents or (parent and parent not in parents):
+                    raise PipelineError("Primary parent must belong to the nonempty parents list")
+                for cid in parents:
+                    _, ancestor = self.candidate(cid)
+                    if ancestor["task"] != task:
+                        raise PipelineError("Combined optimization parents must belong to the same task")
+                parent = parent or parents[0]
             cid = f"{self.now().strftime('%Y%m%dT%H%M%S')}-{task}-{secrets.token_hex(3)}"
             path = self.candidate_dir(cid)
             (path / "output").mkdir(parents=True)
             (path / "code").mkdir()
             data = {"id": cid, "task": task, "created_at": self.now_string(), "parent": parent or self.state["best"].get(task), "hypothesis": hypothesis, "source": source, "license": license_info}
+            data["parents"] = parents if parents is not None else ([data["parent"]] if data["parent"] else [])
             write_json(path / "candidate.json", data)
             return {**data, "directory": str(path), "output": str(path / "output"), "code": str(path / "code")}
 
@@ -475,17 +564,7 @@ class Pipeline:
             return {"status": "promoted", "task": task, "id": cid, "previous": old_id, "cost": cost, "previous_cost": old_cost}
 
     def skip_reason(self, costs):
-        today = self.now().date().isoformat()
-        for item in self.state["submissions"].values():
-            if item["status"] in ATTEMPTED and item["date"] == today:
-                return "already_attempted_today"
-        for item in self.state["submissions"].values():
-            if item["status"] in INFLIGHT and not item.get("submission_id"):
-                return "previous_submission_needs_reconciliation"
-        previous = self.state.get("last_submitted_costs")
-        if previous is None or improvement(previous, costs) <= 1 + 1e-12:
-            return "no_improvement"
-        return None
+        return submission_skip_reason(self.state, costs, self.config, self.now())
 
     def prepare(self):
         self.active()
@@ -531,16 +610,16 @@ class Pipeline:
         self.active()
         with self.locked():
             now = self.now()
-            hour, minute = map(int, self.config.get("daily_submission_time", "20:00").split(":"))
-            start = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            elapsed_minutes = (now - start).total_seconds() / 60
-            if not 0 <= elapsed_minutes < int(self.config.get("submit_window_minutes", 45)):
+            allowance = submission_allowance(self.state, self.config, now)
+            if not allowance['window_open']:
                 raise PipelineError("Outside the configured daily submission window")
             item = self.state["submissions"].get(token)
             if not item or item["status"] != "prepared":
                 raise PipelineError("Submission is not in prepared state")
-            if item["date"] != self.now().date().isoformat():
+            if not after_optimization(self.config) and item["date"] != self.now().date().isoformat():
                 raise PipelineError("Prepared package is from a different Shanghai calendar day")
+            if item["selected"] != self.state["best"]:
+                raise PipelineError("Best candidates changed after preparation; prepare a fresh package")
             reason = self.skip_reason(item["costs"])
             if reason:
                 raise PipelineError(reason)
@@ -549,6 +628,10 @@ class Pipeline:
             if sha256(item["archive"]) != item["archive_sha256"]:
                 raise PipelineError("ZIP changed after preparation")
             item.update(status="upload_started", reserved_at=self.now_string())
+            item.update(quota_date=allowance['quota_date'], quota_timezone=allowance['quota_timezone'],
+                        submission_policy=allowance['policy'])
+            if allowance['policy'] == 'daily_windows':
+                item['window_id'] = allowance['window_id']
             self.save()
             return item
 
@@ -568,6 +651,8 @@ class Pipeline:
             if item.get("submission_id") and sid and item["submission_id"] != sid:
                 raise PipelineError("Cannot reconcile a different submission ID")
             sid = sid or item.get("submission_id")
+            if item["status"] == "not_submitted" and sid is None:
+                raise PipelineError("Incomplete metadata cannot erase a confirmed unsubmitted resolution")
             state_text = str(receipt.get("status", receipt.get("state", ""))).lower()
             returned_score = receipt.get("publicScore", receipt.get("score"))
             if returned_score is not None:
@@ -593,6 +678,8 @@ class Pipeline:
                 raise PipelineError("Incomplete metadata cannot erase an already confirmed score")
             item.update(status=status, receipt=receipt, updated_at=self.now_string())
             if sid:
+                if not item.get("submission_id"):
+                    item["accepted_at"] = self.now_string()
                 item["submission_id"] = sid
                 # Best components are promoted monotonically. Looking up a historical
                 # receipt must not roll the submitted frontier back to an older circuit.
@@ -601,6 +688,162 @@ class Pipeline:
             if returned_score is not None:
                 item["public_score"] = returned_score
             item.setdefault("events", []).append({"at": self.now_string(), "status": status, "receipt": receipt})
+            self.save()
+            return item
+
+    def resolve_unsubmitted(self, token, evidence_file):
+        """Resolve a stopped pre-create upload using pinned local and fresh remote evidence.
+
+        This recognizes the reviewed uploader's explicit PUT-then-create structure,
+        not arbitrary Python semantics. It says nothing about blob storage receipt.
+        The terminal attempt stays in history and prevents retrying its candidate;
+        only legacy attempt-based quotas count it toward the daily limit.
+        """
+        evidence_file = Path(evidence_file).resolve()
+        evidence_hash = sha256(evidence_file)
+        proof = read_json(evidence_file)
+        if proof.get("schema_version") != 1 or proof.get("token") != token:
+            raise PipelineError("Unsubmitted evidence schema or token mismatch")
+        run_id = proof.get("submit_run_id", "")
+        if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+            raise PipelineError("Invalid submit run identifier")
+        names = {"context": "context.json", "result": "result.json", "checkpoint": "checkpoint.json",
+                 "prepared": "prepared.json", "script": "submit_reserved.py", "preflight": "preupload-preflight.json"}
+        files, documents = {}, {}
+        for name in (*names, "history"):
+            entry = proof.get("files", {}).get(name, {})
+            path = Path(entry.get("path", ""))
+            path = (self.storage / path).resolve() if not path.is_absolute() else path.resolve()
+            if not path.is_relative_to(self.storage) or not path.is_file():
+                raise PipelineError(f"Resolution evidence {name} must be a file within storage")
+            if name in names and path != self.storage / "runs" / run_id / names[name]:
+                raise PipelineError(f"Resolution evidence {name} is not the exact submit-run file")
+            digest = sha256(path)
+            if digest != entry.get("sha256"):
+                raise PipelineError(f"Resolution evidence {name} hash mismatch")
+            files[name] = {"path": str(path), "sha256": digest}
+            documents[name] = path.read_text() if name == "script" else read_json(path)
+
+        def stamp(value):
+            try:
+                result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if result.utcoffset() is None:
+                    raise ValueError("Missing timezone")
+                return result
+            except (AttributeError, TypeError, ValueError):
+                raise PipelineError("Resolution evidence requires timezone-aware timestamps") from None
+
+        context, result, checkpoint, prepared, preflight, history = (
+            documents[name] for name in ("context", "result", "checkpoint", "prepared", "preflight", "history"))
+        failure = checkpoint.get("failure_observation", checkpoint)
+        if (context.get("mode") != "submit" or context.get("run_id") != run_id
+                or result.get("mode") != "submit" or result.get("run_id") != run_id
+                or not context.get("job_id") or result.get("job_id") != context["job_id"]
+                or result.get("status") not in {"completed", "failed", "cancelled", "timed_out", "resource_stopped"}):
+            raise PipelineError("Resolution requires an identified, ended submit run")
+        if (failure.get("stage") != "upload_bytes" or not failure.get("error_type")
+                or failure.get("token") != token or prepared.get("token") != token
+                or checkpoint.get("token") != token):
+            raise PipelineError("Resolution requires a matching failure before create_submission")
+        for metadata in (checkpoint, prepared):
+            if metadata.get("submission_id") or metadata.get("platform_score") is not None:
+                raise PipelineError("Resolution conflicts with an accepted submission")
+        started, failed, ended, observed = (stamp(value) for value in (
+            result.get("started_at"), failure.get("at"), result.get("finished_at"), history.get("checked_at")))
+        age = (self.now() - observed).total_seconds()
+        if not started <= failed <= ended <= observed or not 0 <= age <= 1800:
+            raise PipelineError("Resolution history must be fresh and follow the ended upload run")
+        # Check the narrow control-flow contract of the retained one-shot uploader.
+        try:
+            tree = ast.parse(documents["script"])
+        except SyntaxError:
+            raise PipelineError("Uploader source is not valid Python") from None
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        creates = [node for node in calls if isinstance(node.func, ast.Attribute) and node.func.attr == "create_submission"]
+        puts = [node for node in calls if isinstance(node.func, ast.Attribute) and node.func.attr == "put"]
+        stages = {node.value.value: node for node in ast.walk(tree)
+                  if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "stage" for t in node.targets)
+                  and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)}
+        guards = [node for node in tree.body if isinstance(node, ast.Try)
+                  and any(isinstance(handler.type, ast.Name) and handler.type.id == "BaseException"
+                          and handler.body and isinstance(handler.body[-1], ast.Expr)
+                          and isinstance(handler.body[-1].value, ast.Call)
+                          and isinstance(handler.body[-1].value.func, ast.Attribute)
+                          and isinstance(handler.body[-1].value.func.value, ast.Name)
+                          and handler.body[-1].value.func.value.id == "sys"
+                          and handler.body[-1].value.func.attr == "exit"
+                          and len(handler.body[-1].value.args) == 1
+                          and isinstance(handler.body[-1].value.args[0], ast.Constant)
+                          and handler.body[-1].value.args[0].value == 1 for handler in node.handlers)]
+        if (len(creates) != 1 or len(puts) != 1 or len(guards) != 1
+                or not {"upload_bytes", "create_submission"} <= stages.keys()
+                or not stages["upload_bytes"].lineno < puts[0].lineno < stages["create_submission"].lineno < creates[0].lineno
+                or not all(node in list(ast.walk(guards[0])) for node in (puts[0], creates[0]))):
+            raise PipelineError("Uploader does not match the reviewed pre-create failure control flow")
+        if (preflight.get("competition") != self.config.get("competition")
+                or history.get("competition") != self.config.get("competition")
+                or not preflight.get("account") or not preflight.get("team")
+                or preflight.get("complete") is not True or history.get("complete") is not True
+                or type(history.get("pages")) is not int or history["pages"] < 1):
+            raise PipelineError("Resolution requires complete history for the original competition and identity")
+        if history.get("account", preflight["account"]) != preflight["account"] or history.get("team", preflight["team"]) != preflight["team"]:
+            raise PipelineError("Resolution history identity mismatch")
+        rows = history.get("submissions")
+        if not isinstance(rows, list) or not rows:
+            raise PipelineError("Resolution history must include the original accepted submissions")
+        refs, today_count, own_account_seen = set(), 0, False
+        quota_day = observed.astimezone(timezone.utc).date()
+        for row in rows:
+            ref = row.get("ref", row.get("submissionId"))
+            if type(ref) is not int or ref <= 0 or ref in refs:
+                raise PipelineError("Resolution history has missing or duplicate submission IDs")
+            refs.add(ref)
+            if row.get("team_name", row.get("teamName")) != preflight["team"]:
+                raise PipelineError("Resolution history team mismatch")
+            own_account_seen |= row.get("submitted_by_ref", row.get("submittedByRef")) == preflight["account"]
+            submitted_at = stamp(row.get("date"))
+            today_count += submitted_at.astimezone(timezone.utc).date() == quota_day
+            description = row.get("description")
+            if not isinstance(description, str):
+                raise PipelineError("Resolution history is missing matching metadata")
+            if any(value in description for value in (token, run_id, proof.get("archive_sha256", ""))):
+                raise PipelineError("Resolution history contains a matching submission")
+            if (submitted_at >= started and row.get("total_bytes", row.get("totalBytes")) == prepared.get("archive_bytes")):
+                raise PipelineError("Resolution history contains an ambiguous matching archive")
+        known_refs = {row.get("ref") for row in preflight.get("submissions", [])}
+        limits = history.get("limits", {})
+        if (not own_account_seen or not known_refs or None in known_refs or not known_refs <= refs
+                or limits.get("numTotal") != len(rows) or limits.get("numToday") != today_count
+                or type(limits.get("numAllowedNow")) is not int or limits["numAllowedNow"] < 0
+                or history.get("today_count", today_count) != today_count):
+            raise PipelineError("Resolution history and quota/identity evidence disagree")
+        if not limits.get("limitedByTotal", False) and limits["numAllowedNow"] != max(0, self.config.get("official_max_daily_submissions", 5) - today_count):
+            raise PipelineError("Resolution remaining quota disagrees with complete history")
+        with self.locked():
+            if sha256(evidence_file) != evidence_hash or any(sha256(entry["path"]) != entry["sha256"] for entry in files.values()):
+                raise PipelineError("Resolution evidence changed during verification")
+            item = self.state["submissions"].get(token)
+            if item is None or item.get("submission_id") or item.get("public_score") is not None:
+                raise PipelineError("Resolution requires an upload attempt without a known submission ID")
+            digest = evidence_hash
+            if item.get("status") == "not_submitted" and item.get("resolution", {}).get("evidence_sha256") == digest:
+                return item
+            if item.get("status") != "upload_started":
+                raise PipelineError("Only an unresolved upload can be resolved as not submitted")
+            archive_hash = item.get("archive_sha256")
+            if (proof.get("archive_sha256") != archive_hash or prepared.get("archive_sha256") != archive_hash
+                    or checkpoint.get("archive_sha256") != archive_hash
+                    or sha256(item["archive"]) != archive_hash or prepared.get("selected") != item.get("selected")
+                    or not started <= stamp(item.get("reserved_at")) <= failed):
+                raise PipelineError("Resolution evidence does not match the reserved archive and attempt")
+            resolution = {"kind": "not_submitted", "resolved_at": self.now_string(), "submit_run_id": run_id,
+                          "archive_sha256": archive_hash, "evidence_path": str(evidence_file), "evidence_sha256": digest,
+                          "files": files, "history_observed_at": history["checked_at"],
+                          "reason": "Upload failed before the explicit create_submission call; complete subsequent history has no match",
+                          "blob_receipt": "unknown", "attempt_record_retained": True,
+                          "quota_reservation_retained": self.config.get("submission_quota_basis", "attempts") == "attempts"}
+            item.update(status="not_submitted", resolution=resolution, updated_at=self.now_string())
+            item.setdefault("events", []).append({"at": self.now_string(), "status": "not_submitted", "resolution": resolution})
             self.save()
             return item
 
@@ -621,6 +864,9 @@ def main(argv=None):
     create.add_argument("--source", required=True)
     create.add_argument("--license", required=True, dest="license_info")
     create.add_argument("--parent")
+    create.add_argument("--parents", nargs="+", help="All contributing same-task parents for combined optimization")
+    top = sub.add_parser("top", help="Rank up to three distinct candidates with current official evidence")
+    top.add_argument("task", choices=TASKS)
     validate = sub.add_parser("validate", help="Run unchanged official full validation")
     validate.add_argument("id")
     validate.add_argument("--robustness", action="store_true", help="Separate fresh-seed full DQI replication; does not replace official score")
@@ -629,6 +875,9 @@ def main(argv=None):
     sub.add_parser("prepare")
     reserve = sub.add_parser("reserve", help="Persist upload intent immediately before any external upload")
     reserve.add_argument("token")
+    resolve = sub.add_parser("resolve-unsubmitted", help="Resolve a pre-create upload failure using pinned local and fresh complete remote evidence")
+    resolve.add_argument("token")
+    resolve.add_argument("--evidence", required=True)
     for name in ("record", "reconcile"):
         record = sub.add_parser(name, help="Ingest a redacted platform receipt; absence of status/score remains unknown")
         record.add_argument("token")
@@ -642,7 +891,10 @@ def main(argv=None):
     if args.command == "init":
         result = pipeline.init(args.baseline)
     elif args.command == "create":
-        result = pipeline.create(args.task, args.hypothesis, args.source, args.license_info, args.parent)
+        result = pipeline.create(args.task, args.hypothesis, args.source, args.license_info, args.parent, args.parents)
+    elif args.command == "top":
+        with pipeline.locked():
+            result = pipeline.top_candidates(args.task)
     elif args.command == "validate":
         result = pipeline.validate(args.id, args.robustness)
     elif args.command == "promote":
@@ -651,6 +903,8 @@ def main(argv=None):
         result = pipeline.prepare()
     elif args.command == "reserve":
         result = pipeline.reserve(args.token)
+    elif args.command == "resolve-unsubmitted":
+        result = pipeline.resolve_unsubmitted(args.token, args.evidence)
     elif args.command in ("record", "reconcile"):
         result = pipeline.record(args.token, args.receipt, args.status, args.submission_id, args.score)
     else:

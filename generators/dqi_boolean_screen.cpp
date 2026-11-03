@@ -84,11 +84,12 @@ int main(int argc,char**argv) try {
     bool guards=argc>=7 && std::stoul(argv[6]);
     bool borrowed_only=argc>=8 && std::stoul(argv[7]);
     unsigned cache_mode=argc==9?std::stoul(argv[8]):0;
-    if(cache_mode>3)throw std::runtime_error("unknown cache mode");
-    bool live_cache=cache_mode==1, pair_cache=cache_mode>=2, canonical_complements=cache_mode==3;
+    if(cache_mode>4)throw std::runtime_error("unknown cache mode");
+    bool live_cache=cache_mode==1, pair_cache=cache_mode>=2, canonical_complements=cache_mode>=3;
+    bool canonical_planes=cache_mode==4;
     if(cache_mode && (guards||borrowed_only))throw std::runtime_error("live cache requires unconditional conservative tracking");
     if(borrowed_only && guards)throw std::runtime_error("borrowed proof requires unconditional gates");
-    struct Gate { uint64_t op; std::array<uint32_t,3> q; bool ca=false, cb=false; };
+    struct Gate { uint64_t op; std::array<uint32_t,3> q; bool ca=false, cb=false; unsigned ma=1, mb=2; };
     std::vector<Gate> consecutive;
     uint64_t borrowed_uncomputes=0;
     // Optional read-only observation before selected operations. Empty symbolic
@@ -137,7 +138,7 @@ int main(int argc,char**argv) try {
     std::ofstream proof(argv[2]);if(!proof)throw std::runtime_error("proof output");
     proof << "op\tkind\ta\tb\ttarget";
     if(live_cache)proof<<"\tcache\n";
-    else if(pair_cache)proof<<"\tend\ta_last\tb_last\ttarget_last\tspare\tca\tcb\tca_last\tcb_last\n";
+    else if(pair_cache)proof<<"\tend\ta_last\tb_last\ttarget_last\tspare\tca\tcb\tca_last\tcb_last\tma\tmb\tma_last\tmb_last\n";
     else proof<<'\n';
     for(uint64_t i=0;i<count[0];i++) {
         if(query_index<queries.size() && queries[query_index]==i) {
@@ -215,6 +216,20 @@ int main(int argc,char**argv) try {
                 if(!cache_a.empty() && cache_a[0]==0){ca=true;cache_a.erase(cache_a.begin());}
                 if(!cache_b.empty() && cache_b[0]==0){cb=true;cache_b.erase(cache_b.begin());}
             }
+            unsigned ma=1,mb=2;
+            if(canonical_planes && !cache_a.empty() && !cache_b.empty() && cache_a!=cache_b) {
+                // Choose the same two basis vectors for all six GL(2,2) maps.
+                // Exact XOR here: a cap-limited fresh atom would lose the span.
+                Expr sum;
+                std::set_symmetric_difference(cache_a.begin(),cache_a.end(),cache_b.begin(),cache_b.end(),std::back_inserter(sum));
+                std::array<std::pair<Expr,unsigned>,3> plane{{{cache_a,1},{cache_b,2},{sum,3}}};
+                std::sort(plane.begin(),plane.end());
+                ma=plane[0].second;mb=plane[1].second;
+                cache_a=plane[0].first;cache_b=plane[1].first;
+                bool original_ca=ca,original_cb=cb;
+                ca=((ma&1)&&original_ca)^((ma&2)&&original_cb);
+                cb=((mb&1)&&original_ca)^((mb&2)&&original_cb);
+            }
             Expr cache_delta=canonical_complements?alg.mul(cache_a,cache_b):delta;
             if(pair_cache && cache_delta.size()==1 && cache_delta[0]!=0 &&
                cache_delta!=cache_a && cache_delta!=cache_b) {
@@ -227,11 +242,12 @@ int main(int argc,char**argv) try {
                         if(!state[spare].empty()||last_access[spare]>=int64_t(first.op))continue;
                         proof<<first.op<<"\tcached_pair\t"<<first.q[0]<<'\t'<<first.q[1]<<'\t'<<first.q[2]
                              <<'\t'<<i<<'\t'<<q[0]<<'\t'<<q[1]<<'\t'<<q[2]<<'\t'<<spare
-                             <<'\t'<<first.ca<<'\t'<<first.cb<<'\t'<<ca<<'\t'<<cb<<'\n';
+                             <<'\t'<<first.ca<<'\t'<<first.cb<<'\t'<<ca<<'\t'<<cb
+                             <<'\t'<<first.ma<<'\t'<<first.mb<<'\t'<<ma<<'\t'<<mb<<'\n';
                         selected_end=i;pair_cache_reuses++;previous_products.clear();selected=true;break;
                     }
                 }
-                if(!selected)previous_products[cache_delta[0]]={i,q,ca,cb};
+                if(!selected)previous_products[cache_delta[0]]={i,q,ca,cb,ma,mb};
             }
             std::string kind;
             if(delta.empty()){kind="zero";zero++;}

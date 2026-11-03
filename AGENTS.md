@@ -29,10 +29,31 @@ for research, optimization, validation, submission, and competition reporting.
   write each candidate into a distinct experiment directory.
 - Optimize the official per-task cost and combined geometric-mean improvement.
   A paper's resource metric or a forum result is not a measured competition score.
+- Use a per-task Top-3 search cycle: rank distinct candidates by valid full
+  official cost, optimize each of the three parents independently, then combine
+  compatible improvements from all three branches within that task. Every
+  independent result and every combined result needs its own full official
+  validation bound to its exact artifacts; branch PASS does not validate a merge.
+  Use `automation/search.py plan` and `record` to pin parents and persist phase
+  progress across runs. Finish the independent branches before the combined
+  phase; do not replace unfinished branches when a new best appears. Retain all
+  contributing parents for a combined candidate. Fewer than three eligible
+  distinct candidates is a recorded shortfall, not a reason to duplicate one.
+  Submission still uses the single promoted best per task and its existing gates.
 - A candidate's validation belongs to its exact artifact, source, environment,
   and verifier hashes. Changing any relevant input invalidates that evidence.
   Reuse valid completed checks; do not rerun unchanged expensive tests routinely.
-- Full official verification is the submission gate. Additional independent
+- Every feasible optimization must undergo full official verification through
+  `automation/pipeline.py validate`, including public-code adaptations and each
+  feasible variant in a parameter sweep. Screening may establish a concrete
+  correctness/resource violation; estimated cost, small expected gain or an
+  uncertain benefit cannot exempt a feasible candidate from official validation.
+  Build complete artifacts for feasible proposals; until then they remain
+  pending, not officially rejected. Carry unfinished generation/validation in
+  the existing hypothesis queue with candidate IDs, remaining work and reasons;
+  resume it before new experiments within the runner's limits. Reuse matching
+  completed evidence rather than repeating unchanged checks.
+- Full official verification is also the submission gate. Additional independent
   randomness is targeted at stochastic finalists whose improvement is uncertain;
   boundary tests target actual changes. InvSqrt already covers every legal input.
   DQI's allowed nonzero failure rate must remain judged by the official contract.
@@ -42,18 +63,41 @@ for research, optimization, validation, submission, and competition reporting.
 
 ## Authorized external actions
 
-- The user authorized unattended Kaggle submission for this competition, at
-  most once per Asia/Shanghai day at the 20:00 submission window, only for a
-  fully verified improvement over the recorded submitted incumbent. Unchanged
-  or unverified results are skipped. Do not ask for routine submission approval.
+- On 2026-10-30 the user changed unattended Kaggle uploads to two daily windows:
+  08:00 and 20:00 Asia/Shanghai, each lasting 45 minutes and allowing at most one
+  attempt. This supersedes submission immediately after each optimization.
+  On 2026-11-03 the user changed the local daily limit to three successful
+  submissions per UTC day. Success means a valid positive Kaggle submission ID,
+  regardless of grading status; count each ID once. Failed uploads without an
+  ID retain their attempt records but do not consume this daily success limit.
+  The two windows and one-attempt-per-window rule remain unchanged.
+  Separately respect the official maximum of five submissions per UTC day and
+  check current remote team history before uploading. Retain the configured
+  model-task budget. Submit only fully verified improvements over the recorded
+  submitted incumbent; skip unchanged, unverified or already-attempted combinations.
+  Do not ask for routine submission approval.
+- Carry unsubmitted verified improvements into the next scheduled window,
+  including after the 08:00 Asia/Shanghai quota reset. Prioritize the pending best
+  at that window; no new optimization is required to trigger it. Reuse the
+  existing queue and prepare the current verified best at execution.
 - Use `automation/pipeline.py` for preparation and the submission ledger. Reserve
   the attempt before any upload/submit call. An uncertain network outcome must
   be reconciled before another submission; missing status/score is unknown.
+- After each failed or uncertain upload without a submission ID, the existing
+  queue schedules one automatic reconciliation for that upload token. Persist
+  deduplication across restarts, honor the model budget and pause/deadline controls,
+  and do not automatically re-upload or recursively retry reconciliation.
+- A proven failure before `create_submission` may be closed as `not_submitted`
+  only through the pipeline's evidence-checked resolution command, after the
+  upload run has ended and fresh complete platform history confirms no match.
+  Preserve the attempt history and same-combination deduplication, without
+  consuming the daily success quota; this does not
+  claim that the storage service rejected or never received the ZIP bytes.
 - Existing submission `57763974` on 2026-10-29 is the starting submitted baseline.
   Its stored metadata does not establish a platform score or successful grading.
 - Public notebooks, datasets, forum posts, code sharing, team changes, and final
   submission selection require a concrete user-reviewed proposal. Preparing
-  local drafts and reproducibility packages is authorized. Automatic daily ZIP
+  local drafts and reproducibility packages is authorized. Automatic ZIP
   submission does not authorize those other actions.
 - Stop competition submissions at the configured deadline; verify current
   official rules before changing the schedule or limits. Retain milestone and

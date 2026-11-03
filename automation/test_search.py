@@ -1,0 +1,212 @@
+"""Top-3 control tests use tiny artificial artifacts, never scientific validators."""
+from copy import deepcopy
+import unittest
+from unittest.mock import patch
+
+from pipeline import PipelineError, read_json, sha256, write_json
+from search import Search
+import test_pipeline as fixtures
+
+
+class SearchTests(unittest.TestCase):
+    setUp = fixtures.PipelineTests.setUp
+    tearDown = fixtures.PipelineTests.tearDown
+    fixture = fixtures.PipelineTests.fixture
+
+    def seed(self):
+        ids = [self.fixture('invsqrt', cost) for cost in (70, 80, 90)]
+        return Search(self.pipeline), ids
+
+    def child(self, parents, cost=60):
+        cid = self.fixture('invsqrt', cost)
+        path, data = self.pipeline.candidate(cid)
+        data.update(parent=parents[0], parents=parents)
+        write_json(path / 'candidate.json', data)
+        return cid
+
+    def proof(self, cycle, key, **changes):
+        step = next(item for item in cycle['steps'] if item['key'] == key)
+        path = self.pipeline.storage / f'{cycle["cycle_id"]}-{key}-proof.json'
+        write_json(path, dict(task='invsqrt', cycle_id=cycle['cycle_id'], step=key,
+                             parents=step['parents'], conclusion='infeasible',
+                             reason='Exact constraint violation in fixture',
+                             measurements={'required_qubits': 129, 'cap': 128}, **changes))
+        return path
+
+    def test_rank_three_valid_distinct_artifacts_without_running_verifiers(self):
+        search, ids = self.seed()
+        self.pipeline.create('invsqrt', 'unverified lower estimate', 'fixture', 'test')
+        bad = self.fixture('invsqrt', 5)
+        path, _ = self.pipeline.candidate(bad)
+        (path / 'output/invsqrt.kmb').write_bytes(b'tampered')
+        with patch.object(self.pipeline, 'runtime', side_effect=AssertionError('No scientific rerun')):
+            plan = search.plan('invsqrt')
+        cycle = plan['tasks']['invsqrt']
+        self.assertEqual([item['id'] for item in cycle['roots']], ids)
+        self.assertEqual([item['cost'] for item in cycle['roots']], [70, 80, 90])
+        self.assertIn(bad, [item['id'] for item in cycle['ranking_exclusions']])
+        self.assertEqual([item['status'] for item in cycle['steps']], ['pending'] * 3 + ['blocked'])
+
+    def test_identical_artifacts_use_earliest_evidence_not_the_lowest_score(self):
+        _, ids = self.seed()
+        duplicate = self.fixture('invsqrt', 70)
+        path, data = self.pipeline.candidate(ids[0])
+        data['created_at'] = '2026-01-01T00:00:00+08:00'
+        write_json(path / 'candidate.json', data)
+        path, data = self.pipeline.candidate(duplicate)
+        report = read_json(path / 'official.json')
+        report['score'] = 1
+        write_json(path / 'official.json', report)
+        data['verification']['report_sha256'] = sha256(path / 'official.json')
+        write_json(path / 'candidate.json', data)
+        with self.pipeline.locked():
+            result = self.pipeline.top_candidates('invsqrt')
+        self.assertEqual([item['id'] for item in result['candidates']], ids)
+        self.assertEqual(result['candidates'][0]['cost'], 70)
+        self.assertIn(duplicate, result['candidates'][0]['equivalent_candidates'])
+
+    def test_invalid_copy_falls_back_to_valid_same_artifact(self):
+        _, ids = self.seed()
+        replacement = self.fixture('invsqrt', 70)
+        path, data = self.pipeline.candidate(ids[0])
+        data['created_at'] = '2026-01-01T00:00:00+08:00'
+        data['verification']['runtime_fingerprint'] = {'python': 'obsolete'}
+        write_json(path / 'candidate.json', data)
+        with self.pipeline.locked():
+            result = self.pipeline.top_candidates('invsqrt')
+        self.assertEqual([item['id'] for item in result['candidates']], [replacement, *ids[1:]])
+
+    def test_shortfall_is_not_padded_with_duplicates(self):
+        self.fixture('invsqrt', 100)
+        cycle = Search(self.pipeline).plan('invsqrt')['tasks']['invsqrt']
+        self.assertEqual(cycle['shortfall'], 2)
+        self.assertEqual(len(cycle['roots']), 1)
+        self.assertEqual(cycle['steps'][-1]['status'], 'unavailable')
+
+    def test_invalid_early_copy_cannot_hide_a_better_valid_artifact_family(self):
+        _, ids = self.seed()
+        self.fixture('invsqrt', 85)
+        replacement = self.fixture('invsqrt', 90)
+        path, data = self.pipeline.candidate(ids[2])
+        data['created_at'] = '2026-01-01T00:00:00+08:00'
+        write_json(path / 'candidate.json', data)
+        (path / 'output/invsqrt.kmb').write_bytes(b'changed')
+        path, data = self.pipeline.candidate(replacement)
+        report = read_json(path / 'official.json')
+        report['score'] = 2
+        write_json(path / 'official.json', report)
+        data['verification']['report_sha256'] = sha256(path / 'official.json')
+        write_json(path / 'candidate.json', data)
+        with self.pipeline.locked():
+            result = self.pipeline.top_candidates('invsqrt')
+        self.assertEqual([item['id'] for item in result['candidates']], [replacement, *ids[:2]])
+
+    def test_combined_candidate_records_all_same_task_parents(self):
+        _, ids = self.seed()
+        item = self.pipeline.create('invsqrt', 'combine', 'fixture', 'test', parents=ids)
+        self.assertEqual(item['parent'], ids[0])
+        self.assertEqual(item['parents'], ids)
+        with self.assertRaisesRegex(PipelineError, 'same task'):
+            self.pipeline.create('invsqrt', 'bad merge', 'fixture', 'test', parents=[ids[0], self.pipeline.state['best']['dqi']])
+
+    def test_cycle_pins_three_branches_and_requires_separate_combined_validation(self):
+        search, ids = self.seed()
+        cycle = search.plan('invsqrt')['tasks']['invsqrt']
+        cycle_id = cycle['cycle_id']
+        first = self.child([ids[0]], 60)
+        self.pipeline.promote(first)
+        cycle = search.record('invsqrt', cycle_id, 'top1', [first])
+        resumed = Search(self.pipeline).plan('invsqrt')['tasks']['invsqrt']
+        self.assertEqual(resumed['cycle_id'], cycle_id)
+        self.assertEqual([root['id'] for root in resumed['roots']], ids)
+        with self.assertRaisesRegex(PipelineError, 'not pending'):
+            search.record('invsqrt', cycle_id, 'combined', [first])
+        # A more expensive valid child does not replace its own branch's root.
+        second = self.child([ids[1]], 85)
+        third = self.child([ids[2]], 65)
+        search.record('invsqrt', cycle_id, 'top2', [second])
+        cycle = search.record('invsqrt', cycle_id, 'top3', [third])
+        parents = [first, ids[1], third]
+        self.assertEqual(cycle['steps'][-1]['parents'], parents)
+        self.assertEqual(cycle['steps'][-1]['status'], 'pending')
+        merge = self.pipeline.create('invsqrt', 'merge', 'fixture', 'test', parents=parents)
+        with self.assertRaisesRegex(PipelineError, 'completed official validation'):
+            search.record('invsqrt', cycle_id, 'combined', [merge['id']])
+        # The three individual PASS reports cannot stand in for the merge.
+        self.assertEqual(read_json(search.path)['tasks']['invsqrt']['status'], 'active')
+        combined = self.child(parents, 50)
+        cycle = search.record('invsqrt', cycle_id, 'combined', [combined])
+        self.assertEqual(cycle['status'], 'completed')
+        updated = search.plan('invsqrt')['tasks']['invsqrt']
+        self.assertNotEqual(updated['cycle_id'], cycle_id)
+        self.assertEqual(updated['roots'][0]['id'], combined)
+        self.assertTrue((search.path.parent / 'top3-history' / f'{cycle_id}.json').is_file())
+
+    def test_each_independent_result_requires_its_own_evidence_and_ancestry(self):
+        search, ids = self.seed()
+        cycle = search.plan('invsqrt')['tasks']['invsqrt']
+        child = self.pipeline.create('invsqrt', 'unverified', 'fixture', 'test', parent=ids[0])
+        with self.assertRaisesRegex(PipelineError, 'completed official validation'):
+            search.record('invsqrt', cycle['cycle_id'], 'top1', [child['id']])
+        wrong = self.child([ids[1]], 60)
+        with self.assertRaisesRegex(PipelineError, 'step parents'):
+            search.record('invsqrt', cycle['cycle_id'], 'top1', [wrong])
+        with self.assertRaisesRegex(PipelineError, 'cycle changed'):
+            search.record('invsqrt', 'old-cycle', 'top1', [wrong])
+
+    def test_full_official_failure_completes_branch_but_not_an_interrupted_check(self):
+        search, ids = self.seed()
+        cycle = search.plan('invsqrt')['tasks']['invsqrt']
+        cid = self.child([ids[0]], 60)
+        path, data = self.pipeline.candidate(cid)
+        record = data.pop('verification')
+        write_json(path / 'official.json', {'status': 'FAIL', 'error': 'incorrect phase'})
+        record.update(passed=False, returncode=1, report_sha256=sha256(path / 'official.json'))
+        data['runs'] = [record]
+        write_json(path / 'candidate.json', data)
+        with self.assertRaisesRegex(PipelineError, 'completed official validation'):
+            search.record('invsqrt', cycle['cycle_id'], 'top1', [cid])
+        record['finished_at'] = self.pipeline.now_string()
+        write_json(path / 'candidate.json', data)
+        result = search.record('invsqrt', cycle['cycle_id'], 'top1', [cid])
+        self.assertEqual(result['steps'][0]['results'][0]['status'], 'FAIL')
+        self.assertEqual(result['steps'][-1]['status'], 'blocked')
+
+    def test_infeasibility_requires_bound_measurements_not_a_deferral(self):
+        search, _ = self.seed()
+        cycle = search.plan('invsqrt')['tasks']['invsqrt']
+        proof = self.proof(cycle, 'top1')
+        saved = read_json(proof)
+        write_json(proof, {**saved, 'conclusion': 'time_limit'})
+        with self.assertRaisesRegex(PipelineError, 'concrete conclusion'):
+            search.record('invsqrt', cycle['cycle_id'], 'top1', evidence=proof)
+        write_json(proof, saved)
+        result = search.record('invsqrt', cycle['cycle_id'], 'top1', evidence=proof)
+        self.assertEqual(result['steps'][0]['evidence']['sha256'], sha256(proof))
+
+    def test_pinned_parent_mutation_does_not_silently_refresh_the_cycle(self):
+        search, ids = self.seed()
+        cycle = search.plan('invsqrt')['tasks']['invsqrt']
+        before = deepcopy(read_json(search.path))
+        path, _ = self.pipeline.candidate(ids[0])
+        (path / 'output/invsqrt.kmb').write_bytes(b'changed')
+        with self.assertRaisesRegex(PipelineError, 'Artifact changed'):
+            search.plan('invsqrt')
+        self.assertEqual(read_json(search.path), before)
+        self.assertEqual(before['tasks']['invsqrt']['cycle_id'], cycle['cycle_id'])
+
+    def test_general_round_does_not_refresh_finished_task_ahead_of_others(self):
+        search, _ = self.seed()
+        plan = search.plan()
+        cycle = plan['tasks']['invsqrt']
+        for key in ('top1', 'top2', 'top3', 'combined'):
+            proof = self.proof(cycle, key)
+            cycle = search.record('invsqrt', cycle['cycle_id'], key, evidence=proof)
+        next_plan = search.plan()
+        self.assertEqual(next_plan['tasks']['invsqrt']['cycle_id'], cycle['cycle_id'])
+        self.assertEqual(next_plan['tasks']['invsqrt']['status'], 'completed')
+        self.assertEqual(next_plan['tasks']['dqi']['status'], 'active')
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -25,7 +25,7 @@ def manifest(directory):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--task',choices=['invsqrt','dfthcsos'],required=True)
-    p.add_argument('--mode',choices=['existing','interval'],required=True)
+    p.add_argument('--mode',choices=['existing','interval','affine-plane'],required=True)
     p.add_argument('--parent-output',type=Path,required=True)
     p.add_argument('--parent-manifest',type=Path,required=True)
     p.add_argument('--output-dir',type=Path,required=True)
@@ -51,11 +51,11 @@ def main():
             if name=='submission.npz':shutil.copyfile(parent,stage/name);continue
             if not name.endswith('.kmb'):raise ValueError('Binary parent required')
             proofs_path=screen/(name+'.proofs.tsv');summary=screen/(name+'.summary.json')
-            command=[str(scanner),str(parent),str(proofs_path),str(summary),str(a.term_cap),'0','0','0','1' if a.mode=='existing' else '2']
+            command=[str(scanner),str(parent),str(proofs_path),str(summary),str(a.term_cap),'0','0','0','1' if a.mode=='existing' else '4' if a.mode=='affine-plane' else '2']
             with (screen/(name+'.log')).open('w') as log:
                 subprocess.run(command,check=True,stdout=log,stderr=log,timeout=60)
             proofs=read_proofs(proofs_path)
-            if a.mode=='interval':change=rewrite_intervals(parent,stage/name,proofs)
+            if a.mode in ('interval','affine-plane'):change=rewrite_intervals(parent,stage/name,proofs)
             elif proofs:change=rewrite(parent,stage/name,proofs)
             else:shutil.copyfile(parent,stage/name);change=dict(removed_toffolis=0,added_measurements=0)
             rows.append(dict(circuit=name,proofs=len(proofs),change=change,command=command,

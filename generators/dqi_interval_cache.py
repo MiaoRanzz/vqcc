@@ -21,6 +21,29 @@ from dqi_boolean_reduce import read_binary, read_proofs, compile_scanner, MAGIC,
 from generate import output_workspace, sha256
 
 
+def linear_basis_gates(ma, mb):
+    """Shortest reversible X-free basis change, as wire-index CX pairs."""
+    if ma not in (1, 2, 3) or mb not in (1, 2, 3) or ma == mb:
+        raise ValueError('Singular Boolean control basis')
+    queue = [((1, 2), [])]
+    seen = {(1, 2)}
+    for (a, b), gates in queue:
+        if (a, b) == (ma, mb):
+            return gates
+        for state, gate in (((a, a ^ b), (0, 1)), ((a ^ b, b), (1, 0))):
+            if state not in seen:
+                seen.add(state)
+                queue.append((state, gates + [gate]))
+    raise AssertionError('GL(2,2) basis not reachable')
+
+
+def product_correction(ma, mb, ca, cb):
+    """UV = ab + la*a + lb*b + constant for an invertible affine map."""
+    linear_basis_gates(ma, mb)
+    a, b, c, d = ma & 1, (ma >> 1) & 1, mb & 1, (mb >> 1) & 1
+    return (a*c) ^ (ca*c) ^ (cb*a), (b*d) ^ (ca*d) ^ (cb*b), ca*cb
+
+
 def rewrite_intervals(source, destination, proofs):
     data = read_binary(source); old = data['packets']; types = old['types']
     proofs = sorted(proofs, key=lambda p:p['op'])
@@ -46,23 +69,32 @@ def rewrite_intervals(source, destination, proofs):
         def emit(out,op,**operands):
             out['types'].append(op)
             for name,value in operands.items():out[name].append(value)
-        def flip(out,x,y,c,d):
-            if c:emit(out,0x11,q=x)
-            if d:emit(out,0x11,q=y)
-        def update(out,x,y,target,c,d):
+        ma,mb,mma,mmb=[p.get(k,default) for k,default in (('ma',1),('mb',2),('ma_last',1),('mb_last',2))]
+        def basis(out,x,y,m,n,c,d,inverse=False):
+            gates=linear_basis_gates(m,n); wires=(x,y)
+            if inverse:
+                if c:emit(out,0x11,q=x)
+                if d:emit(out,0x11,q=y)
+            for control,target in reversed(gates) if inverse else gates:
+                emit(out,0x21,a2=wires[control],t2=wires[target])
+            if not inverse:
+                if c:emit(out,0x11,q=x)
+                if d:emit(out,0x11,q=y)
+        def update(out,x,y,target,m,n,c,d):
+            la,lb,constant=product_correction(m,n,c,d)
             emit(out,0x21,a2=spare,t2=target)
-            if c:emit(out,0x21,a2=y,t2=target)
-            if d:emit(out,0x21,a2=x,t2=target)
-            if c and d:emit(out,0x11,q=target)
-        flip(first,a,b,ca,cb)
+            if la:emit(out,0x21,a2=x,t2=target)
+            if lb:emit(out,0x21,a2=y,t2=target)
+            if constant:emit(out,0x11,q=target)
+        basis(first,a,b,ma,mb,ca,cb)
         emit(first,0x31,a3=a,b3=b,t3=spare)
-        flip(first,a,b,ca,cb)
-        update(first,a,b,t,ca,cb)
-        update(last,aa,bb,tt,cca,ccb)
-        flip(last,aa,bb,cca,ccb)
+        basis(first,a,b,ma,mb,ca,cb,inverse=True)
+        update(first,a,b,t,ma,mb,ca,cb)
+        update(last,aa,bb,tt,mma,mmb,cca,ccb)
+        basis(last,aa,bb,mma,mmb,cca,ccb)
         emit(last,0x50,q=spare,bit=bit)
         emit(last,0xa0,a2=aa,t2=bb,condition=bit)
-        flip(last,aa,bb,cca,ccb)
+        basis(last,aa,bb,mma,mmb,cca,ccb,inverse=True)
         changes += [(start,first,(a,b,t)),(end,last,(aa,bb,tt))]
     ops=np.array([c[0] for c in changes],dtype=np.int64)
     if np.any(types[ops]!=0x31):
@@ -115,6 +147,7 @@ def main():
     p.add_argument('--term-cap',type=int,default=512)
     p.add_argument('--xor-cache-limit',type=int,default=0)
     p.add_argument('--canonical-complements',action='store_true')
+    p.add_argument('--canonical-planes',action='store_true')
     p.add_argument('--timeout-seconds',type=int,default=240)
     a=p.parse_args();start=time.monotonic()
     if not 1<=a.term_cap<=4096 or not 0<=a.xor_cache_limit<=262144 or not 1<=a.timeout_seconds<=900:
@@ -128,7 +161,7 @@ def main():
     for name in names:shutil.copy2(Path(__file__).with_name(name),code/name)
     scanner=screen/'interval-scanner';source,compile_command=compile_scanner(scanner,code/'dqi_boolean_screen.cpp')
     proofs_path=screen/'proofs.tsv';summary=screen/'summary.json'
-    command=[str(scanner),str(parent),str(proofs_path),str(summary),str(a.term_cap),str(a.xor_cache_limit),'0','0','3' if a.canonical_complements else '2']
+    command=[str(scanner),str(parent),str(proofs_path),str(summary),str(a.term_cap),str(a.xor_cache_limit),'0','0','4' if a.canonical_planes else '3' if a.canonical_complements else '2']
     with (screen/'scanner.log').open('w') as log:
         subprocess.run(command,check=True,stdout=log,stderr=log,timeout=a.timeout_seconds)
     proofs=read_proofs(proofs_path)
@@ -138,7 +171,7 @@ def main():
     report=dict(kind='exact_idle_interval_product_cache',official_validation=False,
         argv=sys.argv,python_executable=sys.executable,python_prefix=sys.prefix,
         parent_output=str(a.parent_output.resolve()),parent_sha256=a.expected_parent_sha256,
-        source_generator_available=False,parameters=dict(term_cap=a.term_cap,xor_cache_limit=a.xor_cache_limit,canonical_complements=a.canonical_complements,selection='greedy_disjoint_latest_product_pair'),
+        source_generator_available=False,parameters=dict(term_cap=a.term_cap,xor_cache_limit=a.xor_cache_limit,canonical_complements=a.canonical_complements or a.canonical_planes,canonical_planes=a.canonical_planes,selection='greedy_disjoint_latest_product_pair'),
         source_hashes={name:sha256(code/name) for name in names},compile_command=compile_command,
         screen_command=command,screen=json.loads(summary.read_text()),proof_sha256=sha256(proofs_path),
         change=change,exact_sites=len(proofs),
